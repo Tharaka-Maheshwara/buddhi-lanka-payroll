@@ -1,0 +1,10 @@
+import {Link} from 'react-router-dom';
+import {useRecords} from '../../shared/hooks/useRecords';
+import {usePeriod} from '../../app/PeriodContext';
+import {PageHeader,Stat} from '../../shared/ui';
+import {money} from '../../shared/utils/format';
+import {calculateDraft,defaultRules} from '../payroll/domain/calculate';
+export function OverviewPage(){const {period}=usePeriod(),{records:employees}=useRecords('employees'),{records:attendance}=useRecords('attendance'),{records:settings}=useRecords('settings');
+ const rows=attendance.filter(r=>r.date.startsWith(period)),rules=settings.find(r=>r.id==='payroll')||defaultRules,total=employees.reduce((s,e)=>s+calculateDraft(e,rows.filter(r=>r.employee===e.id),rules).net,0);
+ return <><PageHeader title="A clear view of your payroll" description="Keep attendance, allowances and monthly pay in one place." action={<Link className="button" to="/attendance">+ Record attendance</Link>}/><div className="mb-6 grid grid-cols-2 gap-4 xl:grid-cols-4"><Stat label="Draft payroll estimate" value={money(total)}/><Stat label="Employees" value={employees.length}/><Stat label="Attendance entries" value={rows.length}/><Stat label="Payroll status" value="Draft"/></div><div className="grid gap-5 xl:grid-cols-[2fr_1fr]"><div className="card overflow-x-auto"><h2>Monthly salary overview</h2><table><thead><tr><th>Employee</th><th>Basic salary</th><th>Entries</th><th>Status</th></tr></thead><tbody>{employees.map(e=><tr key={e.id}><td className="font-semibold">{e.name}</td><td>{money(e.basic)}</td><td>{rows.filter(r=>r.employee===e.id).length}</td><td><span className="badge">Draft estimate</span></td></tr>)}</tbody></table></div><div className="card"><h2>Your monthly workflow</h2>{[['01','Record attendance','Add arrival, personal leave, departure and approved OT.'],['02','Review salary','Check draft calculations against the notebook.'],['03','Confirm payroll rules','Configure the remaining deductions before live use.']].map(([n,t,d])=><div key={n} className="my-3 rounded-lg bg-[#f1f5e8] p-4"><b>{n} · {t}</b><p className="mt-2 text-sm">{d}</p></div>)}</div></div></>
+}

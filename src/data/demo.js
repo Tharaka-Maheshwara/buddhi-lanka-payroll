@@ -1,0 +1,1 @@
+export const demoRecords={employees:[{id:'demo-a',name:'Sample Employee A',role:'Production',basic:45000,attendance:20000,travel:10000,meal:7000,bonus:15000},{id:'demo-b',name:'Sample Employee B',role:'Operations',basic:30000,attendance:6000,travel:0,meal:7000,bonus:0}],attendance:[],settings:[{id:'payroll',days:25,hours:8,ot:1.5,double:2}],drafts:[]};
