@@ -46,7 +46,7 @@ export function SalaryWorksheet({ employee, records, rules }) {
     <p className="mb-4 text-sm">Enter approved deductions. Basic unpaid minutes start from the attendance register. Meal and travel use a 26-day divisor and the sample worksheet’s rounding.</p>
     <div className="mb-4 rounded-lg border border-stone-200 p-4">
       <p className="mb-2 text-sm">Paid leave {paidDays} days · No pay {noPayDays} days</p>
-      <p className="mb-3 text-sm">Enter the approved monthly late total once, including any personal time or early departures counted as lateness. The suggestion replaces the three basic and meal / travel quantities below. Review sick leave and other partial unpaid time separately.</p>
+      <p className="mb-3 text-sm">Enter the approved monthly late total once, including any personal time or early departures counted as lateness. The suggestion replaces the three basic and meal / travel quantities below. Review sick leave and other half unpaid time separately.</p>
       <Field label="Approved monthly late minutes">
         <input type="number" min="0" step="1" value={approvedLate}
           onChange={event => setApprovedLate(event.target.value)} />
