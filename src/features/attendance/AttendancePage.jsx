@@ -11,39 +11,12 @@ import {
   Message,
 } from "../../shared/ui";
 import { Modal } from "../../shared/ui/Modal";
-import { calculateClock, validateDurations } from "./domain/time";
-
-function duration(value = 0) {
-  const totalMinutes = Number(value);
-
-  if (!Number.isFinite(totalMinutes) || totalMinutes < 0) {
-    return "—";
-  }
-
-  const minutes = Math.floor(totalMinutes);
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-
-  if (hours === 0) {
-    return `${remainingMinutes} min`;
-  }
-
-  if (remainingMinutes === 0) {
-    return `${hours}h`;
-  }
-
-  return `${hours}h ${remainingMinutes}min`;
-}
-
-function getTodayDate() {
-  const today = new Date();
-
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, "0");
-  const day = String(today.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
-}
+import { duration } from "../../shared/utils/format";
+import {
+  calculateAttendance,
+  getPersonalLeaves,
+  validateDurations,
+} from "./domain/time";
 
 const blank = {
   employee: "",
@@ -53,9 +26,10 @@ const blank = {
   outTime: "",
   leaveOut: "",
   leaveIn: "",
+  personalLeaves: [],
   overnight: false,
   breakMinutes: 0,
-  regular: 480,
+  regular: 0,
   late: 0,
   unpaid: 0,
   ot: 0,
@@ -71,53 +45,33 @@ const statuses = [
   "Holiday work",
 ];
 
-const leaveStatuses = ["Paid leave", "Sick leave", "No pay"];
-
-const clockFields = [
-  ["inTime", "In time"],
-  ["outTime", "Out time"],
-  ["leaveOut", "Personal leave out"],
-  ["leaveIn", "Personal leave in"],
-];
-
-const durationFields = [
-  ["late", "Arrival late time"],
-  ["regular", "Regular worked time"],
-  ["ot", "Normal OT"],
-  ["double", "Double OT"],
-  ["unpaid", "Total unpaid salary time"],
+const leaveStatuses = [
+  "Paid leave",
+  "Sick leave",
+  "No pay",
 ];
 
 const summaryFields = [
   ["regular", "Regular worked time"],
-  ["late", "Late time"],
+  ["late", "Arrival late"],
+  ["leaveDuration", "Personal leave"],
   ["ot", "OT"],
-  ["double", "Double OT"],
 ];
 
-const headings = [
-  "Date",
-  "Employee",
-  "In time",
-  "Late",
-  "Personal out",
-  "Personal in",
-  "Leave duration",
-  "Out time",
-  "Regular",
-  "OT",
-  "Double OT",
-  "Day / No pay",
-  "Unpaid",
-  "Actions",
-];
+function getTodayDate() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
 
 function clearLeaveTimes(record) {
-  let unpaidMinutes = 0;
+  let unpaid = 0;
 
   if (record.status === "No pay") {
-    unpaidMinutes =
-      record.unpaid > 0 ? record.unpaid : blank.regular;
+    unpaid = record.unpaid > 0 ? record.unpaid : 480;
   }
 
   return {
@@ -126,11 +80,12 @@ function clearLeaveTimes(record) {
     outTime: "",
     leaveOut: "",
     leaveIn: "",
+    personalLeaves: [],
     overnight: false,
     breakMinutes: 0,
     regular: 0,
     late: 0,
-    unpaid: unpaidMinutes,
+    unpaid,
     ot: 0,
     double: 0,
     leaveDuration: 0,
@@ -150,8 +105,8 @@ export function AttendancePage() {
   const [busy, setBusy] = useState(false);
 
   const [deleteEntry, setDeleteEntry] = useState(null);
-  const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   const rows = records
     .filter(
@@ -159,14 +114,16 @@ export function AttendancePage() {
         record.date.startsWith(period) &&
         (!filter || record.employee === filter),
     )
-    .sort((a, b) => a.date.localeCompare(b.date));
+    .sort((first, second) =>
+      first.date.localeCompare(second.date),
+    );
 
   const isLeaveEntry = Boolean(
     entry && leaveStatuses.includes(entry.status),
   );
 
-  let clock = null;
-  let clockError = "";
+  let calculation = null;
+  let calculationError = "";
 
   if (
     entry &&
@@ -174,20 +131,61 @@ export function AttendancePage() {
     (entry.inTime || entry.outTime)
   ) {
     try {
-      clock = calculateClock(entry);
+      calculation = calculateAttendance(entry);
     } catch (error) {
-      clockError = error.message;
+      calculationError = error.message;
     }
   }
 
-  const update = (key, value) => {
+  function employeeName(id) {
+    return (
+      employees.find((employee) => employee.id === id)?.name || id
+    );
+  }
+
+  function update(key, value) {
     setEntry((previous) => ({
       ...previous,
       [key]: value,
     }));
-  };
+  }
 
-  const changeStatus = (status) => {
+  function openEntry(record = null) {
+    if (busy || deleting || deleteEntry) return;
+
+    setMessage("");
+    setFormError("");
+
+    const nextEntry = record
+      ? {
+          ...blank,
+          ...record,
+          personalLeaves: getPersonalLeaves(record).map(
+            (leave) => ({ ...leave }),
+          ),
+        }
+      : {
+          ...blank,
+          employee: filter || "",
+          date: getTodayDate(),
+          personalLeaves: [],
+        };
+
+    setEntry(
+      leaveStatuses.includes(nextEntry.status)
+        ? clearLeaveTimes(nextEntry)
+        : nextEntry,
+    );
+  }
+
+  function closeEntry() {
+    if (busy) return;
+
+    setEntry(null);
+    setFormError("");
+  }
+
+  function changeStatus(status) {
     setFormError("");
 
     setEntry((previous) => {
@@ -203,51 +201,52 @@ export function AttendancePage() {
       if (leaveStatuses.includes(status)) {
         return clearLeaveTimes({
           ...nextEntry,
-          unpaid: status === "No pay" ? blank.regular : 0,
+          unpaid: status === "No pay" ? 480 : 0,
         });
-      }
-
-      if (leaveStatuses.includes(previous.status)) {
-        return {
-          ...nextEntry,
-          regular: blank.regular,
-          unpaid: 0,
-        };
       }
 
       return nextEntry;
     });
-  };
+  }
 
-  const openEntry = (record = null) => {
-    if (busy || deleting || deleteEntry) return;
+  function addPersonalLeave() {
+    setEntry((previous) => {
+      if (previous.personalLeaves.length >= 20) {
+        return previous;
+      }
 
-    setMessage("");
-    setFormError("");
+      return {
+        ...previous,
+        personalLeaves: [
+          ...previous.personalLeaves,
+          { out: "", in: "" },
+        ],
+      };
+    });
+  }
 
-    const nextEntry = record
-      ? { ...blank, ...record }
-      : {
-          ...blank,
-          employee: filter || "",
-          date: getTodayDate(),
-        };
+  function updatePersonalLeave(index, key, value) {
+    setEntry((previous) => ({
+      ...previous,
+      personalLeaves: previous.personalLeaves.map(
+        (leave, leaveIndex) =>
+          leaveIndex === index
+            ? { ...leave, [key]: value }
+            : leave,
+      ),
+    }));
+  }
 
-    setEntry(
-      leaveStatuses.includes(nextEntry.status)
-        ? clearLeaveTimes(nextEntry)
-        : nextEntry,
-    );
-  };
+  function removePersonalLeave(index) {
+    setEntry((previous) => ({
+      ...previous,
+      personalLeaves: previous.personalLeaves.filter(
+        (_, leaveIndex) => leaveIndex !== index,
+      ),
+    }));
+  }
 
-  const closeEntry = () => {
-    if (busy) return;
-
-    setEntry(null);
-    setFormError("");
-  };
-
-  const save = async (event) => {
+  async function save(event) {
     event.preventDefault();
 
     if (busy || !entry) return;
@@ -256,24 +255,17 @@ export function AttendancePage() {
     setFormError("");
 
     try {
-      const savingEntry = isLeaveEntry
-        ? clearLeaveTimes(entry)
-        : {
-            ...entry,
-            leaveDuration: clock?.leave || 0,
-          };
-
-      validateDurations(savingEntry);
-
-      if (!savingEntry.employee || !savingEntry.date) {
-        throw new Error("Select an employee and date.");
+      if (!entry.employee || !entry.date) {
+        throw new Error(
+          "Select an employee and date.",
+        );
       }
 
       const duplicate = records.some(
         (record) =>
-          record.id !== savingEntry.id &&
-          record.employee === savingEntry.employee &&
-          record.date === savingEntry.date,
+          record.id !== entry.id &&
+          record.employee === entry.employee &&
+          record.date === entry.date,
       );
 
       if (duplicate) {
@@ -282,31 +274,23 @@ export function AttendancePage() {
         );
       }
 
-      if (!isLeaveEntry) {
-        if (clockError) {
-          throw new Error(clockError);
-        }
+      let savingEntry;
 
-        if (
-          !clock &&
-          (savingEntry.leaveOut || savingEntry.leaveIn)
-        ) {
-          throw new Error(
-            "Enter shift In and Out times before personal leave.",
-          );
-        }
+      if (isLeaveEntry) {
+        savingEntry = clearLeaveTimes(entry);
+      } else {
+        const calculated = calculateAttendance(entry);
+        const firstLeave = entry.personalLeaves[0];
 
-        const approvedTime =
-          savingEntry.regular +
-          savingEntry.ot +
-          savingEntry.double;
-
-        if (clock && approvedTime > clock.worked) {
-          throw new Error(
-            "Approved worked time exceeds time on site after leave and breaks.",
-          );
-        }
+        savingEntry = {
+          ...entry,
+          ...calculated,
+          leaveOut: firstLeave?.out || "",
+          leaveIn: firstLeave?.in || "",
+        };
       }
+
+      validateDurations(savingEntry);
 
       await saveRecord(savingEntry);
 
@@ -322,24 +306,24 @@ export function AttendancePage() {
     } finally {
       setBusy(false);
     }
-  };
+  }
 
-  const openDelete = (record) => {
+  function openDelete(record) {
     if (busy || deleting || entry) return;
 
     setMessage("");
     setDeleteError("");
     setDeleteEntry(record);
-  };
+  }
 
-  const closeDelete = () => {
+  function closeDelete() {
     if (deleting) return;
 
     setDeleteEntry(null);
     setDeleteError("");
-  };
+  }
 
-  const confirmDelete = async () => {
+  async function confirmDelete() {
     if (!deleteEntry || deleting) return;
 
     setDeleting(true);
@@ -347,35 +331,39 @@ export function AttendancePage() {
 
     try {
       if (!db) {
-        throw new Error("Firebase is not connected.");
+        throw new Error(
+          "Firebase is not connected.",
+        );
       }
 
       if (!deleteEntry.id) {
         throw new Error(
-          "Unable to identify this attendance entry.",
+          "Attendance entry ID is missing.",
         );
       }
 
-      await deleteDoc(doc(db, "attendance", deleteEntry.id));
+      await deleteDoc(
+        doc(db, "attendance", deleteEntry.id),
+      );
 
       setDeleteEntry(null);
       setMessage("Attendance entry deleted.");
     } catch (error) {
       setDeleteError(
         error.code === "permission-denied"
-          ? "Delete permission denied. Publish the updated attendance rules."
-          : error.message || "Unable to delete the entry. Please try again.",
+          ? "Delete permission denied. Check your published rules."
+          : error.message || "Unable to delete attendance.",
       );
     } finally {
       setDeleting(false);
     }
-  };
+  }
 
   return (
     <>
       <PageHeader
         title="Attendance sheet"
-        description="Arrival, personal leave, departure and approved overtime."
+        description="Arrival, personal leave, departure and calculated working time."
         action={
           <Button
             disabled={!employees.length || busy || deleting}
@@ -399,7 +387,10 @@ export function AttendancePage() {
           <option value="">All employees</option>
 
           {employees.map((employee) => (
-            <option key={employee.id} value={employee.id}>
+            <option
+              key={employee.id}
+              value={employee.id}
+            >
               {employee.name}
             </option>
           ))}
@@ -413,7 +404,8 @@ export function AttendancePage() {
             label={label}
             value={duration(
               rows.reduce(
-                (total, record) => total + (record[key] || 0),
+                (total, record) =>
+                  total + (record[key] || 0),
                 0,
               ),
             )}
@@ -422,79 +414,140 @@ export function AttendancePage() {
       </div>
 
       <div className="card overflow-x-auto">
-        <table>
+        <table className="w-full">
           <thead>
             <tr>
-              {headings.map((heading, index) => (
-                <th key={index}>{heading}</th>
-              ))}
+              <th rowSpan={2}>Date</th>
+              <th rowSpan={2}>Employee</th>
+              <th rowSpan={2}>In time</th>
+              <th rowSpan={2}>Late time</th>
+
+              <th colSpan={2} className="text-center">
+                Personal leave
+              </th>
+
+              <th rowSpan={2}>Late time</th>
+              <th rowSpan={2}>Out time</th>
+              <th rowSpan={2}>Regular worked time</th>
+              <th rowSpan={2}>OT</th>
+              <th rowSpan={2}>Double OT</th>
+              <th rowSpan={2}>Pay / No pay</th>
+              <th rowSpan={2}>Actions</th>
+            </tr>
+
+            <tr>
+              <th>Out</th>
+              <th>In</th>
             </tr>
           </thead>
 
           <tbody>
-            {rows.map((record) => (
-              <tr key={record.id}>
-                <td>{record.date}</td>
+            {rows.map((record) => {
+              const personalLeaves =
+                getPersonalLeaves(record);
 
-                <td>
-                  {employees.find(
-                    (employee) => employee.id === record.employee,
-                  )?.name || record.employee}
-                </td>
-
-                <td>{record.inTime || "—"}</td>
-
-                <td className="whitespace-nowrap">
-                  {duration(record.late)}
-                </td>
-
-                <td>{record.leaveOut || "—"}</td>
-                <td>{record.leaveIn || "—"}</td>
-
-                <td className="whitespace-nowrap">
-                  {duration(record.leaveDuration)}
-                </td>
-
-                <td className="whitespace-nowrap">
-                  {record.outTime || "—"}
-                  {record.overnight && " (+1)"}
-                </td>
-
-                {["regular", "ot", "double"].map((key) => (
-                  <td key={key} className="whitespace-nowrap">
-                    {duration(record[key])}
+              return (
+                <tr key={record.id}>
+                  <td className="whitespace-nowrap">
+                    {record.date}
                   </td>
-                ))}
 
-                <td>{record.status}</td>
+                  <td>
+                    {employeeName(record.employee)}
+                  </td>
 
-                <td className="whitespace-nowrap">
-                  {duration(record.unpaid)}
-                </td>
+                  <td>
+                    {record.inTime || "—"}
+                  </td>
 
-                <td>
-                  <div className="flex items-center gap-4 whitespace-nowrap">
-                    <button
-                      type="button"
-                      disabled={busy || deleting}
-                      className="font-medium text-emerald-800 underline disabled:opacity-50"
-                      onClick={() => openEntry(record)}
-                    >
-                      Edit
-                    </button>
+                  <td className="whitespace-nowrap">
+                    {duration(record.late)}
+                  </td>
 
-                    <button
-                      type="button"
-                      disabled={busy || deleting}
-                      className="font-medium text-red-600 underline disabled:opacity-50"
-                      onClick={() => openDelete(record)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  <td>
+                    {personalLeaves.length ? (
+                      <div className="space-y-2">
+                        {personalLeaves.map(
+                          (leave, index) => (
+                            <div
+                              key={index}
+                              className="whitespace-nowrap"
+                            >
+                              {leave.out || "—"}
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+
+                  <td>
+                    {personalLeaves.length ? (
+                      <div className="space-y-2">
+                        {personalLeaves.map(
+                          (leave, index) => (
+                            <div
+                              key={index}
+                              className="whitespace-nowrap"
+                            >
+                              {leave.in || "—"}
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+
+                  <td className="whitespace-nowrap">
+                    {duration(record.leaveDuration)}
+                  </td>
+
+                  <td className="whitespace-nowrap">
+                    {record.outTime || "—"}
+                    {record.overnight && " (+1)"}
+                  </td>
+
+                  {["regular", "ot", "double"].map(
+                    (key) => (
+                      <td
+                        key={key}
+                        className="whitespace-nowrap"
+                      >
+                        {duration(record[key])}
+                      </td>
+                    ),
+                  )}
+
+                  <td>{record.status}</td>
+
+                  <td>
+                    <div className="flex gap-4 whitespace-nowrap">
+                      <button
+                        type="button"
+                        disabled={busy || deleting}
+                        className="font-medium text-emerald-800 underline disabled:opacity-50"
+                        onClick={() => openEntry(record)}
+                      >
+                        Edit
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={busy || deleting}
+                        className="font-medium text-red-600 underline disabled:opacity-50"
+                        onClick={() => openDelete(record)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
 
@@ -505,11 +558,6 @@ export function AttendancePage() {
         )}
       </div>
 
-      <p className="mt-4 text-sm text-stone-600">
-        Durations are displayed as hours and minutes, such as
-        10 min or 1h 30min. Enter total unpaid salary time once.
-      </p>
-
       {entry && (
         <Modal
           title={
@@ -517,7 +565,7 @@ export function AttendancePage() {
               ? "Edit attendance entry"
               : "Daily attendance entry"
           }
-          description="Record employee attendance, leave and approved overtime."
+          description="Record arrival, personal leave and final departure."
           onClose={closeEntry}
           busy={busy}
         >
@@ -546,7 +594,10 @@ export function AttendancePage() {
                       required
                       value={entry.employee}
                       onChange={(event) =>
-                        update("employee", event.target.value)
+                        update(
+                          "employee",
+                          event.target.value,
+                        )
                       }
                     >
                       <option value="" disabled>
@@ -570,20 +621,28 @@ export function AttendancePage() {
                       type="date"
                       value={entry.date}
                       onChange={(event) =>
-                        update("date", event.target.value)
+                        update(
+                          "date",
+                          event.target.value,
+                        )
                       }
                     />
                   </Field>
 
-                  <Field label="Day / No pay">
+                  <Field label="Attendance type">
                     <select
                       value={entry.status}
                       onChange={(event) =>
-                        changeStatus(event.target.value)
+                        changeStatus(
+                          event.target.value,
+                        )
                       }
                     >
                       {statuses.map((status) => (
-                        <option key={status} value={status}>
+                        <option
+                          key={status}
+                          value={status}
+                        >
                           {status}
                         </option>
                       ))}
@@ -604,149 +663,172 @@ export function AttendancePage() {
               </section>
 
               {!isLeaveEntry && (
-                <>
-                  <section className="border-t border-stone-100 pt-5">
-                    <h3 className="mb-4 text-sm font-semibold">
-                      Clock times
-                    </h3>
+                <section className="space-y-5 border-t border-stone-100 pt-5">
+                  <h3 className="text-sm font-semibold">
+                    Regular times
+                  </h3>
 
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {clockFields.map(([key, label]) => (
-                        <Field key={key} label={label}>
-                          <input
-                            type="time"
-                            value={entry[key]}
-                            onInput={(event) =>
-                              update(
-                                key,
-                                event.currentTarget.value,
-                              )
-                            }
-                          />
-                        </Field>
-                      ))}
+                  <Field label="In time">
+                    <input
+                      required
+                      type="time"
+                      value={entry.inTime}
+                      onChange={(event) =>
+                        update(
+                          "inTime",
+                          event.target.value,
+                        )
+                      }
+                    />
+                  </Field>
 
-                      <Field label="Out time date">
-                        <select
-                          value={String(entry.overnight)}
-                          onChange={(event) =>
-                            update(
-                              "overnight",
-                              event.target.value === "true",
-                            )
-                          }
-                        >
-                          <option value="false">Same day</option>
-                          <option value="true">Next day</option>
-                        </select>
-                      </Field>
+                  <div className="rounded-xl border border-stone-200 p-4">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <h4 className="text-sm font-semibold">
+                        Personal leave
+                      </h4>
 
-                      <Field label="Other unpaid breaks (minutes)">
-                        <input
-                          required
-                          type="number"
-                          min="0"
-                          max="1440"
-                          step="1"
-                          value={entry.breakMinutes}
-                          onChange={(event) =>
-                            update(
-                              "breakMinutes",
-                              Number(event.target.value),
-                            )
-                          }
-                        />
-
-                        <p className="mt-2 text-sm font-medium text-emerald-800">
-                          {duration(entry.breakMinutes)}
-                        </p>
-                      </Field>
+                      <Button
+                        type="button"
+                        secondary
+                        disabled={
+                          busy ||
+                          entry.personalLeaves.length >= 20
+                        }
+                        onClick={addPersonalLeave}
+                      >
+                        + Add leave period
+                      </Button>
                     </div>
 
-                    <div
-                      aria-live="polite"
-                      className="mt-4 rounded-lg border border-stone-200 bg-[#f3f7ee] p-4 text-sm"
-                    >
-                      {clockError ? (
-                        <p className="text-red-700">
-                          {clockError}
-                        </p>
-                      ) : clock ? (
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <div>
-                            <p className="text-xs">
-                              Personal leave duration
-                            </p>
+                    {!entry.personalLeaves.length && (
+                      <p className="text-sm text-stone-500">
+                        Add each time the employee
+                        leaves and returns.
+                      </p>
+                    )}
 
-                            <strong>
-                              {duration(clock.leave)}
-                            </strong>
+                    <div className="space-y-4">
+                      {entry.personalLeaves.map(
+                        (leave, index) => (
+                          <div
+                            key={index}
+                            className="rounded-lg border border-stone-200 bg-stone-50 p-4"
+                          >
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <p className="text-sm font-semibold">
+                                Leave period {index + 1}
+                              </p>
+
+                              <button
+                                type="button"
+                                className="text-sm font-medium text-red-600 underline"
+                                onClick={() =>
+                                  removePersonalLeave(index)
+                                }
+                              >
+                                Remove
+                              </button>
+                            </div>
+
+                            <div className="grid gap-4 sm:grid-cols-2">
+                              <Field label="Personal leave out">
+                                <input
+                                  required
+                                  type="time"
+                                  value={leave.out}
+                                  onChange={(event) =>
+                                    updatePersonalLeave(
+                                      index,
+                                      "out",
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </Field>
+
+                              <Field label="Personal leave in">
+                                <input
+                                  required
+                                  type="time"
+                                  value={leave.in}
+                                  onChange={(event) =>
+                                    updatePersonalLeave(
+                                      index,
+                                      "in",
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </Field>
+                            </div>
                           </div>
-
-                          <div>
-                            <p className="text-xs">
-                              Time after leave and breaks
-                            </p>
-
-                            <strong>
-                              {duration(clock.worked)}
-                            </strong>
-                          </div>
-                        </div>
-                      ) : (
-                        <p>
-                          Enter In and Out times to calculate
-                          time on site. Clock times are optional
-                          for historical entries.
-                        </p>
+                        ),
                       )}
                     </div>
-                  </section>
+                  </div>
 
-                  <section className="border-t border-stone-100 pt-5">
-                    <h3 className="mb-2 text-sm font-semibold">
-                      Approved durations
-                    </h3>
+                  <Field label="Out time">
+                    <input
+                      required
+                      type="time"
+                      value={entry.outTime}
+                      onChange={(event) =>
+                        update(
+                          "outTime",
+                          event.target.value,
+                        )
+                      }
+                    />
+                  </Field>
 
-                    <p className="mb-4 text-xs text-stone-600">
-                      Enter whole minutes. For example, enter 90
-                      for 1h 30min. The duration appears below
-                      each field.
+                  <div
+                    aria-live="polite"
+                    className="rounded-lg border border-stone-200 bg-[#f3f7ee] p-4 text-sm"
+                  >
+                    {calculationError ? (
+                      <p className="text-red-700">
+                        {calculationError}
+                      </p>
+                    ) : calculation ? (
+                      <dl className="grid gap-4 sm:grid-cols-2">
+                        {[
+                          ["late", "Arrival late"],
+                          ["leaveDuration", "Personal leave late"],
+                          ["regular", "Regular worked time"],
+                          ["ot", "OT"],
+                        ].map(([key, label]) => (
+                          <div key={key}>
+                            <dt className="text-xs">
+                              {label}
+                            </dt>
+
+                            <dd className="mt-1 font-semibold">
+                              {duration(calculation[key])}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    ) : (
+                      <p>
+                        Enter In and Out times to
+                        calculate working time.
+                      </p>
+                    )}
+                  </div>
+
+                  {entry.double > 0 && (
+                    <p className="text-sm text-stone-600">
+                      This historical entry includes
+                      Double OT. Its existing Regular
+                      and OT allocations are retained.
                     </p>
-
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {durationFields.map(([key, label]) => (
-                        <Field
-                          key={key}
-                          label={`${label} (minutes)`}
-                        >
-                          <input
-                            required
-                            type="number"
-                            min="0"
-                            max="1440"
-                            step="1"
-                            value={entry[key]}
-                            onChange={(event) =>
-                              update(
-                                key,
-                                Number(event.target.value),
-                              )
-                            }
-                          />
-
-                          <p className="mt-2 text-sm font-medium text-emerald-800">
-                            {duration(entry[key])}
-                          </p>
-                        </Field>
-                      ))}
-                    </div>
-                  </section>
-                </>
+                  )}
+                </section>
               )}
             </fieldset>
 
-            <footer className="sticky bottom-0 flex flex-wrap justify-end gap-3 border-t border-stone-100 bg-[#f8faf6] px-6 py-4">
+            <footer className="sticky bottom-0 flex justify-end gap-3 border-t border-stone-100 bg-[#f8faf6] px-6 py-4">
               <Button
                 type="button"
                 secondary
@@ -756,7 +838,10 @@ export function AttendancePage() {
                 Cancel
               </Button>
 
-              <Button type="submit" disabled={busy}>
+              <Button
+                type="submit"
+                disabled={busy}
+              >
                 {busy ? "Saving…" : "Save attendance"}
               </Button>
             </footer>
@@ -771,37 +856,34 @@ export function AttendancePage() {
           onClose={closeDelete}
           busy={deleting}
         >
-          <div className="space-y-5 p-6">
+          <div className="space-y-4 p-6">
             {deleteError && (
-              <div
+              <p
                 role="alert"
-                className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+                className="rounded-lg bg-red-50 p-3 text-sm text-red-800"
               >
                 {deleteError}
-              </div>
+              </p>
             )}
 
-            <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
-              <p className="font-semibold text-stone-900">
-                {employees.find(
-                  (employee) =>
-                    employee.id === deleteEntry.employee,
-                )?.name || deleteEntry.employee}
+            <div className="rounded-lg border border-stone-200 bg-stone-50 p-4">
+              <p className="font-semibold">
+                {employeeName(deleteEntry.employee)}
               </p>
 
-              <p className="mt-2 text-sm text-stone-600">
+              <p className="mt-2 text-sm">
                 Date: {deleteEntry.date}
               </p>
 
-              <p className="mt-1 text-sm text-stone-600">
+              <p className="mt-1 text-sm">
                 Status: {deleteEntry.status}
               </p>
             </div>
 
-            <p className="text-sm text-stone-700">
-              This permanently deletes the attendance entry.
-              Recalculate any saved payroll drafts affected by
-              this change.
+            <p className="text-sm text-stone-600">
+              This permanently deletes the attendance
+              entry. Recalculate saved payroll drafts
+              affected by this change.
             </p>
           </div>
 
@@ -819,7 +901,7 @@ export function AttendancePage() {
               type="button"
               disabled={deleting}
               onClick={confirmDelete}
-              className="rounded-lg bg-red-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg bg-red-600 px-5 py-3 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
             >
               {deleting ? "Deleting…" : "Delete attendance"}
             </button>
