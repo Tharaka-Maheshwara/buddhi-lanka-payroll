@@ -40,7 +40,7 @@ const statuses = [
   "Present",
   "Paid leave",
   "Sick leave",
-  "Partial day",
+  "Half day",
   "No pay",
   "Holiday work",
 ];
