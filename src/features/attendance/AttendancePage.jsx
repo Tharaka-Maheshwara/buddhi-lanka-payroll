@@ -552,23 +552,29 @@ export function AttendancePage() {
         </select>
       </Field>
 
-      <div className="my-6 grid grid-cols-2 gap-4 xl:grid-cols-5">
-        {summaryFields.map(([key, label]) => (
-          <Stat
-            key={key}
-            label={label}
-            value={duration(
-              rows.reduce(
-                (total, record) =>
-                  total + (record[key] || 0),
-                0,
-              ),
-            )}
-          />
-        ))}
-      </div>
+      {filter && (
+        <div className="my-6 grid grid-cols-2 gap-4 xl:grid-cols-5">
+          {summaryFields.map(([key, label]) => (
+            <Stat
+              key={key}
+              label={label}
+              value={duration(
+                rows.reduce(
+                  (total, record) =>
+                    total + (record[key] || 0),
+                  0,
+                ),
+              )}
+            />
+          ))}
+        </div>
+      )}
 
-      <div className="card overflow-x-auto">
+      <div
+        className={`card overflow-x-auto ${
+          filter ? "" : "mt-6"
+        }`}
+      >
         <table className="w-full">
           <thead>
             <tr>
@@ -586,7 +592,7 @@ export function AttendancePage() {
               <th rowSpan={2}>Regular worked time</th>
               <th rowSpan={2}>OT</th>
               <th rowSpan={2}>Double OT</th>
-              <th rowSpan={2}>Attendance Type</th>
+              <th rowSpan={2}>Pay / No pay</th>
               <th rowSpan={2}>Actions</th>
             </tr>
 
