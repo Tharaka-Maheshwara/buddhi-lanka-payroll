@@ -101,6 +101,31 @@ function countPaidLeaveDays(
   return dates.size;
 }
 
+function countSickLeaveDays(
+  records,
+  employeeId,
+  date,
+  excludedId,
+) {
+  if (!employeeId || !date) return 0;
+
+  const year = date.slice(0, 4);
+
+  const dates = new Set(
+    records
+      .filter(
+        (record) =>
+          record.id !== excludedId &&
+          record.employee === employeeId &&
+          record.status === "Sick leave" &&
+          record.date?.startsWith(`${year}-`),
+      )
+      .map((record) => record.date),
+  );
+
+  return dates.size;
+}
+
 function clearLeaveTimes(record) {
   let unpaid = 0;
 
@@ -196,20 +221,38 @@ export function AttendancePage() {
     entry?.id,
   );
 
-  const paidLeaveUnavailable = paidLeaveUsed >= 2;
-
-  const canChoosePaidLeave = Boolean(
-    hasSelectedEmployee &&
-      entry?.date &&
-      !recordsLoading &&
-      !recordsError &&
-      !paidLeaveUnavailable,
+  const sickLeaveUsed = countSickLeaveDays(
+    records,
+    entry?.employee,
+    entry?.date,
+    entry?.id,
   );
+
+  const paidLeaveUnavailable = paidLeaveUsed >= 2;
+  const sickLeaveUnavailable = sickLeaveUsed >= 7;
 
   const paidLeaveRemaining = Math.max(
     0,
     2 - paidLeaveUsed,
   );
+
+  const sickLeaveRemaining = Math.max(
+    0,
+    7 - sickLeaveUsed,
+  );
+
+  const leaveRecordsReady = Boolean(
+    hasSelectedEmployee &&
+      entry?.date &&
+      !recordsLoading &&
+      !recordsError,
+  );
+
+  const canChoosePaidLeave =
+    leaveRecordsReady && !paidLeaveUnavailable;
+
+  const canChooseSickLeave =
+    leaveRecordsReady && !sickLeaveUnavailable;
 
   let calculation = null;
   let calculationError = "";
@@ -249,16 +292,29 @@ export function AttendancePage() {
         [key]: value,
       };
 
-      if (
-        (key === "employee" || key === "date") &&
+      if (key !== "employee" && key !== "date") {
+        return nextEntry;
+      }
+
+      const paidLimitReached =
         nextEntry.status === "Paid leave" &&
         countPaidLeaveDays(
           records,
           nextEntry.employee,
           nextEntry.date,
           nextEntry.id,
-        ) >= 2
-      ) {
+        ) >= 2;
+
+      const sickLimitReached =
+        nextEntry.status === "Sick leave" &&
+        countSickLeaveDays(
+          records,
+          nextEntry.employee,
+          nextEntry.date,
+          nextEntry.id,
+        ) >= 7;
+
+      if (paidLimitReached || sickLimitReached) {
         return {
           ...nextEntry,
           status: "Present",
@@ -322,6 +378,18 @@ export function AttendancePage() {
       setFormError(
         paidLeaveUnavailable
           ? "This employee has already used the 2 paid leave days allowed for this month."
+          : "Select a date and wait for attendance records to load.",
+      );
+      return;
+    }
+
+    if (
+      status === "Sick leave" &&
+      !canChooseSickLeave
+    ) {
+      setFormError(
+        sickLeaveUnavailable
+          ? "This employee has already used the 7 sick leave days allowed for this year."
           : "Select a date and wait for attendance records to load.",
       );
       return;
@@ -438,6 +506,20 @@ export function AttendancePage() {
       ) {
         throw new Error(
           "This employee has already used the 2 paid leave days allowed for this month. Select another attendance type.",
+        );
+      }
+
+      if (
+        entry.status === "Sick leave" &&
+        countSickLeaveDays(
+          records,
+          entry.employee,
+          entry.date,
+          entry.id,
+        ) >= 7
+      ) {
+        throw new Error(
+          "This employee has already used the 7 sick leave days allowed for this year. Select another attendance type.",
         );
       }
 
@@ -828,43 +910,74 @@ export function AttendancePage() {
                         changeStatus(event.target.value)
                       }
                     >
-                      {statuses.map((status) => (
-                        <option
-                          key={status}
-                          value={status}
-                          disabled={
-                            status === "Paid leave" &&
-                            !canChoosePaidLeave
+                      {statuses.map((status) => {
+                        let disabled = false;
+                        let label = status;
+
+                        if (status === "Paid leave") {
+                          disabled = !canChoosePaidLeave;
+
+                          if (paidLeaveUnavailable) {
+                            label =
+                              "Paid leave — monthly limit reached";
                           }
-                        >
-                          {status === "Paid leave" &&
-                          paidLeaveUnavailable
-                            ? "Paid leave — monthly limit reached"
-                            : status}
-                        </option>
-                      ))}
+                        }
+
+                        if (status === "Sick leave") {
+                          disabled = !canChooseSickLeave;
+
+                          if (sickLeaveUnavailable) {
+                            label =
+                              "Sick leave — yearly limit reached";
+                          }
+                        }
+
+                        return (
+                          <option
+                            key={status}
+                            value={status}
+                            disabled={disabled}
+                          >
+                            {label}
+                          </option>
+                        );
+                      })}
                     </select>
 
-                    {hasSelectedEmployee &&
-                      entry.date &&
-                      !recordsLoading &&
-                      !recordsError && (
+                    {leaveRecordsReady && (
+                      <div className="mt-2 space-y-1 text-xs">
                         <p
-                          className={`mt-2 text-xs ${
+                          className={
                             paidLeaveUnavailable
                               ? "text-red-600"
                               : "text-stone-600"
-                          }`}
+                          }
                         >
-                          {paidLeaveUnavailable
-                            ? "Both paid leave days have already been used for this month."
-                            : `Paid leave days available: ${paidLeaveRemaining}${
-                                entry.id
-                                  ? " (excluding this entry)"
-                                  : ""
-                              }.`}
+                          Paid leave available for{" "}
+                          {entry.date.slice(0, 7)}:{" "}
+                          {paidLeaveRemaining} / 2
                         </p>
-                      )}
+
+                        <p
+                          className={
+                            sickLeaveUnavailable
+                              ? "text-red-600"
+                              : "text-stone-600"
+                          }
+                        >
+                          Sick leave available for{" "}
+                          {entry.date.slice(0, 4)}:{" "}
+                          {sickLeaveRemaining} / 7
+                        </p>
+
+                        {entry.id && (
+                          <p className="text-stone-500">
+                            Available balances exclude
+                            the entry being edited.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </Field>
                 </div>
 
