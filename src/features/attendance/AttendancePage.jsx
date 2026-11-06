@@ -42,7 +42,7 @@ const statuses = [
   "Sick leave",
   "Partial day",
   "No pay",
-  "Holiday work",
+  "Holiday work (OOT)",
 ];
 
 const leaveStatuses = [
@@ -65,6 +65,31 @@ function getTodayDate() {
   const day = String(today.getDate()).padStart(2, "0");
 
   return `${year}-${month}-${day}`;
+}
+
+function countPaidLeaveDays(
+  records,
+  employeeId,
+  date,
+  excludedId,
+) {
+  if (!employeeId || !date) return 0;
+
+  const month = date.slice(0, 7);
+
+  const paidLeaveDates = new Set(
+    records
+      .filter(
+        (record) =>
+          record.id !== excludedId &&
+          record.employee === employeeId &&
+          record.status === "Paid leave" &&
+          record.date?.startsWith(`${month}-`),
+      )
+      .map((record) => record.date),
+  );
+
+  return paidLeaveDates.size;
 }
 
 function clearLeaveTimes(record) {
@@ -95,8 +120,18 @@ function clearLeaveTimes(record) {
 export function AttendancePage() {
   const { period } = usePeriod();
 
-  const { records, saveRecord, error } = useRecords("attendance");
-  const { records: employees } = useRecords("employees");
+  const {
+    records,
+    saveRecord,
+    error,
+    loading: attendanceLoading,
+  } = useRecords("attendance");
+
+  const {
+    records: employees,
+    error: employeesError,
+    loading: employeesLoading,
+  } = useRecords("employees");
 
   const [filter, setFilter] = useState("");
   const [entry, setEntry] = useState(null);
@@ -107,6 +142,11 @@ export function AttendancePage() {
   const [deleteEntry, setDeleteEntry] = useState(null);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
+
+  const recordsLoading =
+    attendanceLoading || employeesLoading;
+
+  const recordsError = error || employeesError;
 
   const rows = records
     .filter(
@@ -120,6 +160,28 @@ export function AttendancePage() {
 
   const isLeaveEntry = Boolean(
     entry && leaveStatuses.includes(entry.status),
+  );
+
+  const paidLeaveUsed = countPaidLeaveDays(
+    records,
+    entry?.employee,
+    entry?.date,
+    entry?.id,
+  );
+
+  const paidLeaveUnavailable = paidLeaveUsed >= 2;
+
+  const canChoosePaidLeave = Boolean(
+    entry?.employee &&
+      entry?.date &&
+      !recordsLoading &&
+      !recordsError &&
+      !paidLeaveUnavailable,
+  );
+
+  const paidLeaveRemaining = Math.max(
+    0,
+    2 - paidLeaveUsed,
   );
 
   let calculation = null;
@@ -139,19 +201,51 @@ export function AttendancePage() {
 
   function employeeName(id) {
     return (
-      employees.find((employee) => employee.id === id)?.name || id
+      employees.find((employee) => employee.id === id)?.name ||
+      id
     );
   }
 
   function update(key, value) {
-    setEntry((previous) => ({
-      ...previous,
-      [key]: value,
-    }));
+    setFormError("");
+
+    setEntry((previous) => {
+      const nextEntry = {
+        ...previous,
+        [key]: value,
+      };
+
+      // Recheck eligibility when employee or date changes.
+      if (
+        (key === "employee" || key === "date") &&
+        nextEntry.status === "Paid leave" &&
+        countPaidLeaveDays(
+          records,
+          nextEntry.employee,
+          nextEntry.date,
+          nextEntry.id,
+        ) >= 2
+      ) {
+        return {
+          ...nextEntry,
+          status: "Present",
+        };
+      }
+
+      return nextEntry;
+    });
   }
 
   function openEntry(record = null) {
-    if (busy || deleting || deleteEntry) return;
+    if (
+      busy ||
+      deleting ||
+      deleteEntry ||
+      recordsLoading ||
+      recordsError
+    ) {
+      return;
+    }
 
     setMessage("");
     setFormError("");
@@ -186,6 +280,18 @@ export function AttendancePage() {
   }
 
   function changeStatus(status) {
+    if (
+      status === "Paid leave" &&
+      !canChoosePaidLeave
+    ) {
+      setFormError(
+        paidLeaveUnavailable
+          ? "This employee has already used the 2 paid leave days allowed for this month."
+          : "Select an employee and date, and wait for attendance records to load.",
+      );
+      return;
+    }
+
     setFormError("");
 
     setEntry((previous) => {
@@ -255,6 +361,12 @@ export function AttendancePage() {
     setFormError("");
 
     try {
+      if (recordsLoading || recordsError) {
+        throw new Error(
+          "Attendance records must load successfully before saving.",
+        );
+      }
+
       if (!entry.employee || !entry.date) {
         throw new Error(
           "Select an employee and date.",
@@ -271,6 +383,20 @@ export function AttendancePage() {
       if (duplicate) {
         throw new Error(
           "An entry already exists for this employee and date.",
+        );
+      }
+
+      if (
+        entry.status === "Paid leave" &&
+        countPaidLeaveDays(
+          records,
+          entry.employee,
+          entry.date,
+          entry.id,
+        ) >= 2
+      ) {
+        throw new Error(
+          "This employee has already used the 2 paid leave days allowed for this month. Select another attendance type.",
         );
       }
 
@@ -366,7 +492,13 @@ export function AttendancePage() {
         description="Arrival, personal leave, departure and calculated working time."
         action={
           <Button
-            disabled={!employees.length || busy || deleting}
+            disabled={
+              !employees.length ||
+              recordsLoading ||
+              Boolean(recordsError) ||
+              busy ||
+              deleting
+            }
             onClick={() => openEntry()}
           >
             + Add entry
@@ -374,15 +506,19 @@ export function AttendancePage() {
         }
       />
 
-      {(error || message) && (
-        <Message>{error || message}</Message>
+      {(recordsError || message) && (
+        <Message>
+          {recordsError || message}
+        </Message>
       )}
 
       <Field label="Employee">
         <select
           className="max-w-xs"
           value={filter}
-          onChange={(event) => setFilter(event.target.value)}
+          onChange={(event) =>
+            setFilter(event.target.value)
+          }
         >
           <option value="">All employees</option>
 
@@ -528,9 +664,16 @@ export function AttendancePage() {
                     <div className="flex gap-4 whitespace-nowrap">
                       <button
                         type="button"
-                        disabled={busy || deleting}
+                        disabled={
+                          busy ||
+                          deleting ||
+                          recordsLoading ||
+                          Boolean(recordsError)
+                        }
                         className="font-medium text-emerald-800 underline disabled:opacity-50"
-                        onClick={() => openEntry(record)}
+                        onClick={() =>
+                          openEntry(record)
+                        }
                       >
                         Edit
                       </button>
@@ -539,7 +682,9 @@ export function AttendancePage() {
                         type="button"
                         disabled={busy || deleting}
                         className="font-medium text-red-600 underline disabled:opacity-50"
-                        onClick={() => openDelete(record)}
+                        onClick={() =>
+                          openDelete(record)
+                        }
                       >
                         Delete
                       </button>
@@ -551,11 +696,15 @@ export function AttendancePage() {
           </tbody>
         </table>
 
-        {!rows.length && (
+        {recordsLoading ? (
+          <p className="py-8">
+            Loading attendance…
+          </p>
+        ) : !rows.length ? (
           <p className="py-8">
             No attendance for this selection.
           </p>
-        )}
+        ) : null}
       </div>
 
       {entry && (
@@ -638,15 +787,46 @@ export function AttendancePage() {
                         )
                       }
                     >
-                      {statuses.map((status) => (
-                        <option
-                          key={status}
-                          value={status}
-                        >
-                          {status}
-                        </option>
-                      ))}
+                      {statuses.map((status) => {
+                        const paidLeaveDisabled =
+                          status === "Paid leave" &&
+                          !canChoosePaidLeave;
+
+                        return (
+                          <option
+                            key={status}
+                            value={status}
+                            disabled={paidLeaveDisabled}
+                          >
+                            {status === "Paid leave" &&
+                            paidLeaveUnavailable
+                              ? "Paid leave — monthly limit reached"
+                              : status}
+                          </option>
+                        );
+                      })}
                     </select>
+
+                    {entry.employee &&
+                      entry.date &&
+                      !recordsLoading &&
+                      !recordsError && (
+                        <p
+                          className={`mt-2 text-xs ${
+                            paidLeaveUnavailable
+                              ? "text-red-600"
+                              : "text-stone-600"
+                          }`}
+                        >
+                          {paidLeaveUnavailable
+                            ? "Both paid leave days have already been used for this month."
+                            : `Paid leave days available: ${paidLeaveRemaining}${
+                                entry.id
+                                  ? " (excluding this entry)"
+                                  : ""
+                              }.`}
+                        </p>
+                      )}
                   </Field>
                 </div>
 
@@ -794,8 +974,14 @@ export function AttendancePage() {
                       <dl className="grid gap-4 sm:grid-cols-2">
                         {[
                           ["late", "Arrival late"],
-                          ["leaveDuration", "Personal leave late"],
-                          ["regular", "Regular worked time"],
+                          [
+                            "leaveDuration",
+                            "Personal leave late",
+                          ],
+                          [
+                            "regular",
+                            "Regular worked time",
+                          ],
                           ["ot", "OT"],
                         ].map(([key, label]) => (
                           <div key={key}>
@@ -840,7 +1026,11 @@ export function AttendancePage() {
 
               <Button
                 type="submit"
-                disabled={busy}
+                disabled={
+                  busy ||
+                  recordsLoading ||
+                  Boolean(recordsError)
+                }
               >
                 {busy ? "Saving…" : "Save attendance"}
               </Button>
