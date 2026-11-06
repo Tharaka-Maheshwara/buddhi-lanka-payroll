@@ -178,6 +178,13 @@ export function AttendancePage() {
       first.date.localeCompare(second.date),
     );
 
+  const hasSelectedEmployee = Boolean(
+    entry?.employee &&
+      employees.some(
+        (employee) => employee.id === entry.employee,
+      ),
+  );
+
   const isLeaveEntry = Boolean(
     entry && leaveStatuses.includes(entry.status),
   );
@@ -192,7 +199,7 @@ export function AttendancePage() {
   const paidLeaveUnavailable = paidLeaveUsed >= 2;
 
   const canChoosePaidLeave = Boolean(
-    entry?.employee &&
+    hasSelectedEmployee &&
       entry?.date &&
       !recordsLoading &&
       !recordsError &&
@@ -209,6 +216,7 @@ export function AttendancePage() {
 
   if (
     entry &&
+    hasSelectedEmployee &&
     !isLeaveEntry &&
     (entry.inTime || entry.outTime)
   ) {
@@ -227,6 +235,12 @@ export function AttendancePage() {
   }
 
   function update(key, value) {
+    if (busy) return;
+
+    if (key !== "employee" && !hasSelectedEmployee) {
+      return;
+    }
+
     setFormError("");
 
     setEntry((previous) => {
@@ -299,6 +313,8 @@ export function AttendancePage() {
   }
 
   function changeStatus(status) {
+    if (!hasSelectedEmployee || busy) return;
+
     if (
       status === "Paid leave" &&
       !canChoosePaidLeave
@@ -306,7 +322,7 @@ export function AttendancePage() {
       setFormError(
         paidLeaveUnavailable
           ? "This employee has already used the 2 paid leave days allowed for this month."
-          : "Select an employee and date, and wait for attendance records to load.",
+          : "Select a date and wait for attendance records to load.",
       );
       return;
     }
@@ -335,6 +351,8 @@ export function AttendancePage() {
   }
 
   function addPersonalLeave() {
+    if (!hasSelectedEmployee || busy) return;
+
     setEntry((previous) => {
       if (previous.personalLeaves.length >= 20) {
         return previous;
@@ -351,6 +369,8 @@ export function AttendancePage() {
   }
 
   function updatePersonalLeave(index, key, value) {
+    if (!hasSelectedEmployee || busy) return;
+
     setEntry((previous) => ({
       ...previous,
       personalLeaves: previous.personalLeaves.map(
@@ -363,6 +383,8 @@ export function AttendancePage() {
   }
 
   function removePersonalLeave(index) {
+    if (!hasSelectedEmployee || busy) return;
+
     setEntry((previous) => ({
       ...previous,
       personalLeaves: previous.personalLeaves.filter(
@@ -386,9 +408,9 @@ export function AttendancePage() {
         );
       }
 
-      if (!entry.employee || !entry.date) {
+      if (!hasSelectedEmployee || !entry.date) {
         throw new Error(
-          "Select an employee and date.",
+          "Select a valid employee and date.",
         );
       }
 
@@ -592,7 +614,7 @@ export function AttendancePage() {
               <th rowSpan={2}>Regular worked time</th>
               <th rowSpan={2}>OT</th>
               <th rowSpan={2}>Double OT</th>
-              <th rowSpan={2}>Pay / No pay</th>
+              <th rowSpan={2}>Attendance type</th>
               <th rowSpan={2}>Actions</th>
             </tr>
 
@@ -786,6 +808,7 @@ export function AttendancePage() {
                   <Field label="Date">
                     <input
                       required
+                      disabled={!hasSelectedEmployee}
                       type="date"
                       value={entry.date}
                       onChange={(event) =>
@@ -799,6 +822,7 @@ export function AttendancePage() {
 
                   <Field label="Attendance type">
                     <select
+                      disabled={!hasSelectedEmployee}
                       value={entry.status}
                       onChange={(event) =>
                         changeStatus(event.target.value)
@@ -821,7 +845,7 @@ export function AttendancePage() {
                       ))}
                     </select>
 
-                    {entry.employee &&
+                    {hasSelectedEmployee &&
                       entry.date &&
                       !recordsLoading &&
                       !recordsError && (
@@ -844,7 +868,14 @@ export function AttendancePage() {
                   </Field>
                 </div>
 
-                {isLeaveEntry && (
+                {!hasSelectedEmployee && (
+                  <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    Select an employee first to enter
+                    attendance details.
+                  </p>
+                )}
+
+                {hasSelectedEmployee && isLeaveEntry && (
                   <p
                     role="status"
                     className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900"
@@ -857,7 +888,12 @@ export function AttendancePage() {
               </section>
 
               {!isLeaveEntry && (
-                <section className="space-y-5 border-t border-stone-100 pt-5">
+                <fieldset
+                  disabled={!hasSelectedEmployee}
+                  className={`m-0 min-w-0 space-y-5 border-0 border-t border-solid border-stone-100 p-0 pt-5 ${
+                    !hasSelectedEmployee ? "opacity-50" : ""
+                  }`}
+                >
                   <h3 className="text-sm font-semibold">
                     Regular times
                   </h3>
@@ -886,6 +922,7 @@ export function AttendancePage() {
                         type="button"
                         secondary
                         disabled={
+                          !hasSelectedEmployee ||
                           busy ||
                           entry.personalLeaves.length >= 20
                         }
@@ -980,7 +1017,9 @@ export function AttendancePage() {
                     aria-live="polite"
                     className="rounded-lg border border-stone-200 bg-[#f3f7ee] p-4 text-sm"
                   >
-                    {calculationError ? (
+                    {!hasSelectedEmployee ? (
+                      <p>Select an employee first.</p>
+                    ) : calculationError ? (
                       <p className="text-red-700">
                         {calculationError}
                       </p>
@@ -1011,7 +1050,7 @@ export function AttendancePage() {
                       </p>
                     )}
                   </div>
-                </section>
+                </fieldset>
               )}
             </fieldset>
 
@@ -1028,6 +1067,7 @@ export function AttendancePage() {
               <Button
                 type="submit"
                 disabled={
+                  !hasSelectedEmployee ||
                   busy ||
                   recordsLoading ||
                   Boolean(recordsError)
