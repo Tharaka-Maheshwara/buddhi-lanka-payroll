@@ -42,7 +42,7 @@ const statuses = [
   "Sick leave",
   "Partial day",
   "No pay",
-  "Holiday work (OOT)",
+  "Holiday work",
 ];
 
 const leaveStatuses = [
@@ -56,6 +56,15 @@ const summaryFields = [
   ["late", "Arrival late"],
   ["leaveDuration", "Personal leave"],
   ["ot", "OT"],
+  ["double", "Double OT"],
+];
+
+const previewFields = [
+  ["late", "Arrival late"],
+  ["leaveDuration", "Personal leave late"],
+  ["regular", "Regular worked time"],
+  ["ot", "OT"],
+  ["double", "Double OT"],
 ];
 
 function getTodayDate() {
@@ -77,7 +86,7 @@ function countPaidLeaveDays(
 
   const month = date.slice(0, 7);
 
-  const paidLeaveDates = new Set(
+  const dates = new Set(
     records
       .filter(
         (record) =>
@@ -89,7 +98,7 @@ function countPaidLeaveDays(
       .map((record) => record.date),
   );
 
-  return paidLeaveDates.size;
+  return dates.size;
 }
 
 function clearLeaveTimes(record) {
@@ -115,6 +124,17 @@ function clearLeaveTimes(record) {
     double: 0,
     leaveDuration: 0,
   };
+}
+
+function displayWorkDuration(record, key) {
+  if (
+    record.status === "Holiday work" &&
+    (key === "regular" || key === "ot")
+  ) {
+    return "—";
+  }
+
+  return duration(record[key]);
 }
 
 export function AttendancePage() {
@@ -215,7 +235,6 @@ export function AttendancePage() {
         [key]: value,
       };
 
-      // Recheck eligibility when employee or date changes.
       if (
         (key === "employee" || key === "date") &&
         nextEntry.status === "Paid leave" &&
@@ -533,7 +552,7 @@ export function AttendancePage() {
         </select>
       </Field>
 
-      <div className="my-6 grid grid-cols-2 gap-4 xl:grid-cols-4">
+      <div className="my-6 grid grid-cols-2 gap-4 xl:grid-cols-5">
         {summaryFields.map(([key, label]) => (
           <Stat
             key={key}
@@ -567,7 +586,7 @@ export function AttendancePage() {
               <th rowSpan={2}>Regular worked time</th>
               <th rowSpan={2}>OT</th>
               <th rowSpan={2}>Double OT</th>
-              <th rowSpan={2}>Pay / No pay</th>
+              <th rowSpan={2}>Attendance Type</th>
               <th rowSpan={2}>Actions</th>
             </tr>
 
@@ -592,9 +611,7 @@ export function AttendancePage() {
                     {employeeName(record.employee)}
                   </td>
 
-                  <td>
-                    {record.inTime || "—"}
-                  </td>
+                  <td>{record.inTime || "—"}</td>
 
                   <td className="whitespace-nowrap">
                     {duration(record.late)}
@@ -653,7 +670,7 @@ export function AttendancePage() {
                         key={key}
                         className="whitespace-nowrap"
                       >
-                        {duration(record[key])}
+                        {displayWorkDuration(record, key)}
                       </td>
                     ),
                   )}
@@ -671,9 +688,7 @@ export function AttendancePage() {
                           Boolean(recordsError)
                         }
                         className="font-medium text-emerald-800 underline disabled:opacity-50"
-                        onClick={() =>
-                          openEntry(record)
-                        }
+                        onClick={() => openEntry(record)}
                       >
                         Edit
                       </button>
@@ -682,9 +697,7 @@ export function AttendancePage() {
                         type="button"
                         disabled={busy || deleting}
                         className="font-medium text-red-600 underline disabled:opacity-50"
-                        onClick={() =>
-                          openDelete(record)
-                        }
+                        onClick={() => openDelete(record)}
                       >
                         Delete
                       </button>
@@ -782,29 +795,24 @@ export function AttendancePage() {
                     <select
                       value={entry.status}
                       onChange={(event) =>
-                        changeStatus(
-                          event.target.value,
-                        )
+                        changeStatus(event.target.value)
                       }
                     >
-                      {statuses.map((status) => {
-                        const paidLeaveDisabled =
-                          status === "Paid leave" &&
-                          !canChoosePaidLeave;
-
-                        return (
-                          <option
-                            key={status}
-                            value={status}
-                            disabled={paidLeaveDisabled}
-                          >
-                            {status === "Paid leave" &&
-                            paidLeaveUnavailable
-                              ? "Paid leave — monthly limit reached"
-                              : status}
-                          </option>
-                        );
-                      })}
+                      {statuses.map((status) => (
+                        <option
+                          key={status}
+                          value={status}
+                          disabled={
+                            status === "Paid leave" &&
+                            !canChoosePaidLeave
+                          }
+                        >
+                          {status === "Paid leave" &&
+                          paidLeaveUnavailable
+                            ? "Paid leave — monthly limit reached"
+                            : status}
+                        </option>
+                      ))}
                     </select>
 
                     {entry.employee &&
@@ -972,25 +980,20 @@ export function AttendancePage() {
                       </p>
                     ) : calculation ? (
                       <dl className="grid gap-4 sm:grid-cols-2">
-                        {[
-                          ["late", "Arrival late"],
-                          [
-                            "leaveDuration",
-                            "Personal leave late",
-                          ],
-                          [
-                            "regular",
-                            "Regular worked time",
-                          ],
-                          ["ot", "OT"],
-                        ].map(([key, label]) => (
+                        {previewFields.map(([key, label]) => (
                           <div key={key}>
                             <dt className="text-xs">
                               {label}
                             </dt>
 
                             <dd className="mt-1 font-semibold">
-                              {duration(calculation[key])}
+                              {displayWorkDuration(
+                                {
+                                  ...calculation,
+                                  status: entry.status,
+                                },
+                                key,
+                              )}
                             </dd>
                           </div>
                         ))}
@@ -1002,14 +1005,6 @@ export function AttendancePage() {
                       </p>
                     )}
                   </div>
-
-                  {entry.double > 0 && (
-                    <p className="text-sm text-stone-600">
-                      This historical entry includes
-                      Double OT. Its existing Regular
-                      and OT allocations are retained.
-                    </p>
-                  )}
                 </section>
               )}
             </fieldset>

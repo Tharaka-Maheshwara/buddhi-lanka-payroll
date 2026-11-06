@@ -1,6 +1,7 @@
 const SHIFT_START = 8 * 60 + 30;
 const SHIFT_END = 17 * 60 + 30;
 const LUNCH_MINUTES = 60;
+
 const REGULAR_DAY_MINUTES =
   SHIFT_END - SHIFT_START - LUNCH_MINUTES;
 
@@ -44,21 +45,10 @@ export function getPersonalLeaves(record) {
 export function calculateArrivalLate(inTime) {
   const arrival = toMinutes(inTime);
 
-  if (arrival < 8 * 60 + 35) {
-    return 0;
-  }
-
-  if (arrival < 8 * 60 + 45) {
-    return 15;
-  }
-
-  if (arrival < 9 * 60) {
-    return 30;
-  }
-
-  if (arrival <= 9 * 60 + 15) {
-    return 60;
-  }
+  if (arrival < 8 * 60 + 35) return 0;
+  if (arrival < 8 * 60 + 45) return 15;
+  if (arrival < 9 * 60) return 30;
+  if (arrival <= 9 * 60 + 15) return 60;
 
   return 240;
 }
@@ -109,13 +99,8 @@ function getClockDetails(record) {
     let leaveEnd = toMinutes(period.in);
 
     if (overnight) {
-      if (leaveStart < start) {
-        leaveStart += 1440;
-      }
-
-      if (leaveEnd < start) {
-        leaveEnd += 1440;
-      }
+      if (leaveStart < start) leaveStart += 1440;
+      if (leaveEnd < start) leaveEnd += 1440;
     }
 
     if (
@@ -172,10 +157,7 @@ function getClockDetails(record) {
 export function calculateClock(record) {
   const { leave, worked } = getClockDetails(record);
 
-  return {
-    leave,
-    worked,
-  };
+  return { leave, worked };
 }
 
 export function calculateAttendance(record) {
@@ -253,22 +235,23 @@ export function calculateAttendance(record) {
     morningOT + eveningOT - overtimeLeave,
   );
 
-  const result = {
+  if (record.status === "Holiday work") {
+    return {
+      late,
+      leaveDuration: details.leave,
+      regular: 0,
+      ot: 0,
+      double: regular + ot,
+    };
+  }
+
+  return {
     late,
     leaveDuration: details.leave,
     regular,
     ot,
-    double: record.double || 0,
+    double: 0,
   };
-
-  // Preserve historical special-pay allocations until
-  // the company's Double OT calculation rule is supplied.
-  if (result.double > 0) {
-    result.regular = record.regular || 0;
-    result.ot = record.ot || 0;
-  }
-
-  return result;
 }
 
 export function validateDurations(record) {
@@ -295,8 +278,6 @@ export function validateDurations(record) {
   if (
     record.regular + record.ot + record.double > 1440
   ) {
-    throw new Error(
-      "Worked time exceeds 24 hours.",
-    );
+    throw new Error("Worked time exceeds 24 hours.");
   }
 }

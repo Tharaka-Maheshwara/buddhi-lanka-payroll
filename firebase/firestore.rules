@@ -109,7 +109,7 @@ service cloud.firestore {
           'Sick leave',
           'Half day',
           'No pay',
-          'Holiday work'
+          'Holiday work(OOT)'
         ]
 
         && request.resource.data.overnight is bool
