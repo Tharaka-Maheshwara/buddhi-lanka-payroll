@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { useRecords } from "../../shared/hooks/useRecords";
 import { usePeriod } from "../../app/PeriodContext";
+
 import {
   Button,
   Field,
@@ -9,31 +10,28 @@ import {
   PageHeader,
 } from "../../shared/ui";
 
+import { Modal } from "../../shared/ui/Modal";
 import { money, duration } from "../../shared/utils/format";
+
 import { calculateSalary } from "./domain/salary";
 import { DownloadPaysheet } from "./DownloadPaysheet";
 
-const earningLabels = {
-  basic: "Basic salary after deductions",
-  attendance: "Attendance allowance",
-  travel: "Travelling allowance",
-  meal: "Meal allowance",
-  bonus: "Production bonus",
-  ot: "OT payment",
-  double: "Double OT payment",
-};
-
-const earningKeys = [
-  "basic",
-  "attendance",
-  "travel",
-  "meal",
-  "bonus",
-  "ot",
-  "double",
+const earningFields = [
+  ["basic", "Basic salary after deductions"],
+  ["attendance", "Attendance allowance"],
+  ["travel", "Travelling allowance"],
+  ["meal", "Meal allowance"],
+  ["bonus", "Production bonus"],
+  ["ot", "OT payment"],
+  ["double", "Double OT payment"],
 ];
 
-function AmountRow({ label, value, deduction = false, bold = false }) {
+function AmountRow({
+  label,
+  value,
+  deduction = false,
+  bold = false,
+}) {
   return (
     <div
       className={`flex justify-between gap-4 border-b border-stone-100 py-3 ${
@@ -54,46 +52,54 @@ function AmountRow({ label, value, deduction = false, bold = false }) {
   );
 }
 
-function PayrollDetails({ employee, records, period }) {
-  const [input, setInput] = useState({
-    lateMinutes: "",
-    bonusDeduction: "0",
-    advance: "0",
-    otherDeduction: "0",
+// Track calculation inputs so a changed attendance record or employee
+// profile cannot silently replace the displayed calculation.
+function sourceKey(employee, records) {
+  return JSON.stringify({
+    employee: [
+      employee.id,
+      employee.name,
+      employee.role,
+      employee.basic,
+      employee.attendance,
+      employee.travel,
+      employee.meal,
+      employee.bonus,
+    ],
+    records: records
+      .map((record) => [
+        record.id,
+        record.date,
+        record.status,
+        record.late,
+        record.leaveDuration,
+        record.ot,
+        record.double,
+      ])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   });
+}
 
-  function update(key, value) {
-    setInput((previous) => ({
-      ...previous,
-      [key]: value,
-    }));
-  }
+function SalaryModal({ employee, records, period, onClose }) {
+  const [bonusDeduction, setBonusDeduction] = useState("0");
+  const [calculation, setCalculation] = useState(null);
+  const [error, setError] = useState("");
 
-  let result = null;
-  let calculationError = "";
+  const currentSource = sourceKey(employee, records);
 
-  try {
-    result = calculateSalary(employee, records, {
-      ...input,
-      lateMinutes:
-        input.lateMinutes === "" ? undefined : input.lateMinutes,
-    });
+  const needsRecalculation =
+    calculation !== null &&
+    (
+      calculation.source !== currentSource ||
+      calculation.input !== bonusDeduction
+    );
 
-    if (
-      !result.epf ||
-      !Number.isFinite(result.deductions.epf) ||
-      !Number.isFinite(result.totalDeductions)
-    ) {
-      throw new Error(
-        "Update domain/salary.js with the EPF-enabled calculation code.",
-      );
-    }
-  } catch (error) {
-    result = null;
-    calculationError = error.message;
-  }
+  const result =
+    calculation && !needsRecalculation
+      ? calculation.result
+      : null;
 
-  const automaticLate = records
+  const recordedLate = records
     .filter(
       (record) =>
         !["Paid leave", "Sick leave", "No pay"].includes(record.status),
@@ -106,144 +112,211 @@ function PayrollDetails({ employee, records, period }) {
       0,
     );
 
+  function changeDeduction(value) {
+    setBonusDeduction(value);
+    setError("");
+  }
+
+  function calculate(event) {
+    event.preventDefault();
+    setError("");
+
+    try {
+      const nextResult = calculateSalary(employee, records, {
+        bonusDeduction,
+        advance: 0,
+        otherDeduction: 0,
+      });
+
+      if (
+        !nextResult.epf ||
+        !Number.isFinite(nextResult.deductions.epf) ||
+        !Number.isFinite(nextResult.totalDeductions)
+      ) {
+        throw new Error(
+          "Update domain/salary.js with the EPF-enabled calculation.",
+        );
+      }
+
+      setCalculation({
+        result: nextResult,
+        source: currentSource,
+        input: bonusDeduction,
+      });
+    } catch (failure) {
+      setCalculation(null);
+      setError(failure.message || "Unable to calculate salary.");
+    }
+  }
+
   return (
-    <section className="card mt-6">
-      <div className="mb-6 flex items-center gap-4 border-b border-stone-200 pb-5">
-        <img
-          src="/company-logo.png"
-          alt="Buddhi Lanka Engineers"
-          className="h-16 w-24 object-contain"
-        />
+    <Modal
+      title="Calculate employee salary"
+      description={`${employee.name} · ${period}`}
+      onClose={onClose}
+      busy={false}
+    >
+      <div className="space-y-6 p-6">
+        <div className="flex items-center gap-4 border-b border-stone-100 pb-5">
+          <img
+            src="/company-logo.png"
+            alt="Buddhi Lanka Engineers"
+            className="h-14 w-20 object-contain"
+          />
 
-        <div>
-          <h2 className="font-semibold">
-            BUDDHI LANKA ENGINEERS
-          </h2>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-800">
+              Buddhi Lanka Engineers
+            </p>
 
-          <p className="text-sm text-stone-500">
-            Salary calculation preview · {period}
-          </p>
+            <h3 className="mt-2 text-xl font-semibold">
+              {employee.name}
+            </h3>
+
+            <p className="mt-1 text-sm text-stone-500">
+              {employee.role} · Pay period: {period}
+            </p>
+          </div>
         </div>
-      </div>
 
-      <h2 className="text-xl font-semibold">
-        {employee.name}
-      </h2>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+            <p className="text-sm text-stone-500">
+              Monthly production bonus
+            </p>
 
-      <p className="mt-1 text-sm text-stone-500">
-        {employee.role}
-      </p>
-
-      <div className="mt-6 rounded-xl border border-stone-200 bg-stone-50 p-4">
-        <p className="text-sm">
-          Recorded arrival late + personal leave:{" "}
-          <strong>{duration(automaticLate)}</strong>
-        </p>
-
-        <p className="mt-2 text-sm text-stone-600">
-          Leave approved late minutes empty to use the recorded total.
-          To include early departure or correct the total, enter the
-          complete approved monthly late time below.
-        </p>
-      </div>
-
-      <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        <Field label="Approved monthly late time (minutes, optional)">
-          <input
-            type="number"
-            min="0"
-            step="1"
-            placeholder={String(automaticLate)}
-            value={input.lateMinutes}
-            onChange={(event) =>
-              update("lateMinutes", event.target.value)
-            }
-          />
-        </Field>
-
-        <Field label="Production bonus deduction (LKR)">
-          <input
-            type="number"
-            min="0"
-            max={employee.bonus || 0}
-            step="0.01"
-            value={input.bonusDeduction}
-            onChange={(event) =>
-              update("bonusDeduction", event.target.value)
-            }
-          />
-        </Field>
-
-        <Field label="Advance (LKR)">
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={input.advance}
-            onChange={(event) =>
-              update("advance", event.target.value)
-            }
-          />
-        </Field>
-
-        <Field label="Other deductions (LKR)">
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={input.otherDeduction}
-            onChange={(event) =>
-              update("otherDeduction", event.target.value)
-            }
-          />
-        </Field>
-      </div>
-
-      {calculationError && (
-        <p role="alert" className="mt-5 text-sm text-red-700">
-          {calculationError}
-        </p>
-      )}
-
-      {result && (
-        <>
-          <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              ["Paid leave", `${result.counts.paid} days`],
-              ["Sick leave", `${result.counts.sick} days`],
-              ["No pay", `${result.counts.noPay} days`],
-              [
-                "Total late time",
-                duration(result.time.lateMinutes),
-              ],
-              [
-                "Late converted to days",
-                `${result.counts.lateDays} days`,
-              ],
-              [
-                "Remaining late",
-                duration(result.time.extraLateMinutes),
-              ],
-              ["OT", duration(result.time.otMinutes)],
-              ["Double OT", duration(result.time.doubleMinutes)],
-            ].map(([label, value]) => (
-              <div
-                key={label}
-                className="rounded-xl border border-stone-200 p-4"
-              >
-                <p className="text-sm text-stone-500">
-                  {label}
-                </p>
-
-                <p className="mt-2 font-semibold">
-                  {value}
-                </p>
-              </div>
-            ))}
+            <p className="mt-2 font-semibold">
+              {money(employee.bonus || 0)}
+            </p>
           </div>
 
-          <div className="mt-6 grid gap-6 lg:grid-cols-2">
-            <section className="rounded-xl border border-stone-200 p-5">
+          <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+            <p className="text-sm text-stone-500">
+              Recorded arrival late + personal leave
+            </p>
+
+            <p className="mt-2 font-semibold">
+              {duration(recordedLate)}
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={calculate} className="space-y-4">
+          <Field label="Production bonus deduction (LKR)">
+            <input
+              autoFocus
+              required
+              type="number"
+              min="0"
+              max={Number(employee.bonus || 0)}
+              step="0.01"
+              value={bonusDeduction}
+              onChange={(event) =>
+                changeDeduction(event.target.value)
+              }
+            />
+          </Field>
+
+          <p className="text-sm text-stone-500">
+            Enter 0 if no production bonus deduction applies.
+            Salary is calculated only when you press Calculate salary.
+          </p>
+
+          {error && (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+            >
+              {error}
+            </div>
+          )}
+
+          <Button type="submit">
+            Calculate salary
+          </Button>
+        </form>
+
+        {needsRecalculation && (
+          <p
+            role="status"
+            className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
+          >
+            The deduction or source records have changed. Press
+            Calculate salary again to display the updated total.
+          </p>
+        )}
+
+        {!calculation && !error && (
+          <p className="rounded-xl border border-stone-200 p-4 text-sm text-stone-500">
+            The final salary will appear after calculation.
+          </p>
+        )}
+
+        {result && (
+          <>
+            <div
+              role="status"
+              className="rounded-2xl bg-emerald-900 p-5 text-white"
+            >
+              <p className="text-sm text-emerald-100">
+                Final salary after EPF
+              </p>
+
+              <p className="mt-2 text-3xl font-semibold">
+                {money(result.payable)}
+              </p>
+
+              <p className="mt-2 text-xs text-emerald-100">
+                Employee EPF (8%):{" "}
+                {money(result.deductions.epf)}
+              </p>
+            </div>
+
+            <section>
+              <h3 className="mb-3 font-semibold">
+                Attendance summary
+              </h3>
+
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {[
+                  ["Paid leave", `${result.counts.paid} days`],
+                  ["Sick leave", `${result.counts.sick} days`],
+                  ["No pay", `${result.counts.noPay} days`],
+                  [
+                    "Total late",
+                    duration(result.time.lateMinutes),
+                  ],
+                  [
+                    "Late converted to days",
+                    `${result.counts.lateDays} days`,
+                  ],
+                  [
+                    "Remaining late",
+                    duration(result.time.extraLateMinutes),
+                  ],
+                  ["OT", duration(result.time.otMinutes)],
+                  [
+                    "Double OT",
+                    duration(result.time.doubleMinutes),
+                  ],
+                ].map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="rounded-xl border border-stone-200 p-3"
+                  >
+                    <p className="text-xs text-stone-500">
+                      {label}
+                    </p>
+
+                    <p className="mt-2 text-sm font-semibold">
+                      {value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-stone-200 p-4">
               <h3 className="mb-3 font-semibold">
                 Calculation breakdown
               </h3>
@@ -253,8 +326,14 @@ function PayrollDetails({ employee, records, period }) {
                   ["Basic daily rate", result.rates.daily],
                   ["Basic hourly rate", result.rates.hourly],
                   ["OT hourly rate", result.rates.ot],
-                  ["Double OT hourly rate", result.rates.double],
-                  ["Basic deduction", result.deductions.basic],
+                  [
+                    "Double OT hourly rate",
+                    result.rates.double,
+                  ],
+                  [
+                    "Basic deduction",
+                    result.deductions.basic,
+                  ],
                   [
                     "Attendance penalty",
                     result.deductions.attendance,
@@ -280,36 +359,18 @@ function PayrollDetails({ employee, records, period }) {
                   />
                 ))}
               </dl>
-
-              <div className="mt-5 rounded-xl border border-emerald-100 bg-emerald-50 p-4">
-                <h4 className="text-sm font-semibold text-emerald-900">
-                  Employee EPF calculation
-                </h4>
-
-                <p className="mt-2 text-sm text-emerald-900">
-                  {money(result.epf.base)} × 8% ={" "}
-                  <strong>
-                    {money(result.deductions.epf)}
-                  </strong>
-                </p>
-
-                <p className="mt-2 text-xs text-emerald-800">
-                  Calculated from basic salary after deductions,
-                  following the supplied worksheet.
-                </p>
-              </div>
             </section>
 
-            <section className="rounded-xl border border-stone-200 p-5">
+            <section className="rounded-xl border border-stone-200 p-4">
               <h3 className="mb-3 font-semibold">
                 Salary summary
               </h3>
 
               <dl>
-                {earningKeys.map((key) => (
+                {earningFields.map(([key, label]) => (
                   <AmountRow
                     key={key}
-                    label={earningLabels[key]}
+                    label={label}
                     value={result.earnings[key]}
                   />
                 ))}
@@ -326,61 +387,48 @@ function PayrollDetails({ employee, records, period }) {
                   deduction
                 />
 
-                <AmountRow
-                  label="Advance"
-                  value={result.deductions.advance}
-                  deduction
-                />
+                <div className="py-3 text-xs text-stone-500">
+                  EPF base: {money(result.epf.base)}
+                  {" × 8%"}
+                </div>
 
-                <AmountRow
-                  label="Other deductions"
-                  value={result.deductions.other}
-                  deduction
-                />
-
-                <AmountRow
-                  label="Total deductions from gross"
-                  value={result.totalDeductions}
-                  deduction
-                  bold
-                />
-
-                <div className="mt-4 flex justify-between gap-4 rounded-xl bg-emerald-900 p-4 font-semibold text-white">
+                <div className="flex justify-between gap-4 border-t border-stone-200 pt-4 font-semibold text-emerald-900">
                   <dt>Net payable</dt>
-
-                  <dd className="whitespace-nowrap">
-                    {money(result.payable)}
-                  </dd>
+                  <dd>{money(result.payable)}</dd>
                 </div>
               </dl>
             </section>
-          </div>
 
-          <div className="mt-6 border-t border-stone-200 pt-5">
-            <h3 className="font-semibold">
-              Employee paysheet
-            </h3>
+            <section className="border-t border-stone-100 pt-4">
+              <h3 className="font-semibold">
+                Employee paysheet
+              </h3>
 
-            <p className="mt-2 text-sm text-stone-500">
-              Download a separate PDF for {employee.name} using
-              the current salary calculation.
-            </p>
+              <DownloadPaysheet
+                employee={employee}
+                period={period}
+                result={result}
+              />
+            </section>
+          </>
+        )}
 
-            <DownloadPaysheet
-              employee={employee}
-              period={period}
-              result={result}
-            />
-          </div>
-        </>
-      )}
+        <p className="text-xs text-stone-500">
+          This calculation and manual deduction are not saved to
+          Firestore. Download the paysheet before closing.
+        </p>
+      </div>
 
-      <p className="mt-5 text-sm text-stone-500">
-        Manual adjustments are included in the downloaded paysheet,
-        but are not saved to Firestore. Closing this calculation or
-        changing the employee or period resets these adjustments.
-      </p>
-    </section>
+      <footer className="sticky bottom-0 flex justify-end border-t border-stone-100 bg-[#f8faf6] px-6 py-4">
+        <Button
+          type="button"
+          secondary
+          onClick={onClose}
+        >
+          Close
+        </Button>
+      </footer>
+    </Modal>
   );
 }
 
@@ -404,57 +452,38 @@ export function PayrollPage() {
   const loading = employeesLoading || attendanceLoading;
   const error = employeesError || attendanceError;
 
-  const monthlyAttendance = attendance.filter(
-    (record) =>
-      typeof record.date === "string" &&
-      record.date.startsWith(`${period}-`),
-  );
-
-  const rows = employees.map((employee) => {
-    const records = monthlyAttendance.filter(
-      (record) => record.employee === employee.id,
-    );
-
-    try {
-      const result = calculateSalary(employee, records);
-
-      if (
-        !result.epf ||
-        !Number.isFinite(result.deductions.epf)
-      ) {
-        throw new Error(
-          "Update domain/salary.js with the EPF-enabled calculation.",
-        );
-      }
-
-      return {
-        employee,
-        records,
-        result,
-        error: "",
-      };
-    } catch (error) {
-      return {
-        employee,
-        records,
-        result: null,
-        error: error.message,
-      };
-    }
-  });
-
-  const selected =
+  const selectedEmployee =
     selection?.period === period
-      ? rows.find(
-          (row) => row.employee.id === selection.id,
+      ? employees.find(
+          (employee) => employee.id === selection.id,
         )
       : null;
+
+  const selectedRecords = selectedEmployee
+    ? attendance.filter(
+        (record) =>
+          record.employee === selectedEmployee.id &&
+          typeof record.date === "string" &&
+          record.date.startsWith(`${period}-`),
+      )
+    : [];
+
+  function openCalculation(employee) {
+    setSelection({
+      id: employee.id,
+      period,
+    });
+  }
+
+  function closeCalculation() {
+    setSelection(null);
+  }
 
   return (
     <>
       <PageHeader
         title="Monthly payroll"
-        description={`Salary calculation preview for ${period}.`}
+        description={`Select an employee to calculate salary for ${period}.`}
       />
 
       {error && <Message>{error}</Message>}
@@ -465,78 +494,51 @@ export function PayrollPage() {
 
       {!loading && !error && (
         <>
-          <p className="mb-4 text-sm text-stone-500">
-            Table amounts use default adjustments. Open View /
-            Calculate to enter advances and manual deductions.
-          </p>
-
           <div className="card overflow-x-auto">
             <table>
               <thead>
                 <tr>
                   <th>Employee</th>
-                  <th>Adjusted basic</th>
+                  <th>Role</th>
+                  <th>Basic salary</th>
                   <th>Attendance</th>
                   <th>Travel</th>
                   <th>Meal</th>
-                  <th>Bonus</th>
-                  <th>OT</th>
-                  <th>Double OT</th>
-                  <th>Gross salary</th>
-                  <th>EPF (8%)</th>
-                  <th>Net payable</th>
+                  <th>Production bonus</th>
                   <th>Actions</th>
                 </tr>
               </thead>
 
               <tbody>
-                {rows.map((row) => (
-                  <tr key={row.employee.id}>
+                {employees.map((employee) => (
+                  <tr key={employee.id}>
                     <td className="font-semibold">
-                      {row.employee.name}
+                      {employee.name}
                     </td>
 
-                    {row.result ? (
-                      <>
-                        {earningKeys.map((key) => (
-                          <td key={key}>
-                            {money(row.result.earnings[key])}
-                          </td>
-                        ))}
+                    <td>{employee.role}</td>
 
-                        <td className="font-semibold">
-                          {money(row.result.gross)}
-                        </td>
-
-                        <td className="text-red-700">
-                          {money(row.result.deductions.epf)}
-                        </td>
-
-                        <td className="font-semibold text-emerald-900">
-                          {money(row.result.payable)}
-                        </td>
-                      </>
-                    ) : (
-                      <td
-                        colSpan={10}
-                        className="text-red-700"
-                      >
-                        {row.error}
+                    {[
+                      "basic",
+                      "attendance",
+                      "travel",
+                      "meal",
+                      "bonus",
+                    ].map((key) => (
+                      <td key={key}>
+                        {money(employee[key] || 0)}
                       </td>
-                    )}
+                    ))}
 
                     <td>
                       <button
                         type="button"
-                        className="whitespace-nowrap font-medium text-emerald-800 underline"
                         onClick={() =>
-                          setSelection({
-                            id: row.employee.id,
-                            period,
-                          })
+                          openCalculation(employee)
                         }
+                        className="whitespace-nowrap font-semibold text-emerald-800 underline"
                       >
-                        View / Calculate
+                        Calculate salary
                       </button>
                     </td>
                   </tr>
@@ -544,32 +546,21 @@ export function PayrollPage() {
               </tbody>
             </table>
 
-            {!rows.length && (
+            {!employees.length && (
               <p className="py-8">
                 Add employees to calculate payroll.
               </p>
             )}
           </div>
 
-          {selected && (
-            <>
-              <PayrollDetails
-                key={`${period}:${selected.employee.id}`}
-                employee={selected.employee}
-                records={selected.records}
-                period={period}
-              />
-
-              <div className="mt-4">
-                <Button
-                  type="button"
-                  secondary
-                  onClick={() => setSelection(null)}
-                >
-                  Close calculation
-                </Button>
-              </div>
-            </>
+          {selectedEmployee && (
+            <SalaryModal
+              key={`${period}:${selectedEmployee.id}`}
+              employee={selectedEmployee}
+              records={selectedRecords}
+              period={period}
+              onClose={closeCalculation}
+            />
           )}
         </>
       )}
