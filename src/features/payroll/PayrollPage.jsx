@@ -17,7 +17,7 @@ import { calculateSalary } from "./domain/salary";
 import { DownloadPaysheet } from "./DownloadPaysheet";
 
 const earningFields = [
-  ["basic", "Basic salary after deductions"],
+  ["basic", "Earned basic salary"],
   ["attendance", "Attendance allowance"],
   ["travel", "Travelling allowance"],
   ["meal", "Meal allowance"],
@@ -52,8 +52,6 @@ function AmountRow({
   );
 }
 
-// Track calculation inputs so a changed attendance record or employee
-// profile cannot silently replace the displayed calculation.
 function sourceKey(employee, records) {
   return JSON.stringify({
     employee: [
@@ -66,21 +64,30 @@ function sourceKey(employee, records) {
       employee.meal,
       employee.bonus,
     ],
+
     records: records
       .map((record) => [
         record.id,
         record.date,
         record.status,
+        record.regular,
         record.late,
         record.leaveDuration,
         record.ot,
         record.double,
       ])
-      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      .sort((a, b) =>
+        String(a[0]).localeCompare(String(b[0])),
+      ),
   });
 }
 
-function SalaryModal({ employee, records, period, onClose }) {
+function SalaryModal({
+  employee,
+  records,
+  period,
+  onClose,
+}) {
   const [bonusDeduction, setBonusDeduction] = useState("0");
   const [calculation, setCalculation] = useState(null);
   const [error, setError] = useState("");
@@ -102,7 +109,9 @@ function SalaryModal({ employee, records, period, onClose }) {
   const recordedLate = records
     .filter(
       (record) =>
-        !["Paid leave", "Sick leave", "No pay"].includes(record.status),
+        !["Paid leave", "Sick leave", "No pay"].includes(
+          record.status,
+        ),
     )
     .reduce(
       (total, record) =>
@@ -122,6 +131,12 @@ function SalaryModal({ employee, records, period, onClose }) {
     setError("");
 
     try {
+      if (!records.length) {
+        throw new Error(
+          "No attendance records exist for this employee and pay period.",
+        );
+      }
+
       const nextResult = calculateSalary(employee, records, {
         bonusDeduction,
         advance: 0,
@@ -145,7 +160,9 @@ function SalaryModal({ employee, records, period, onClose }) {
       });
     } catch (failure) {
       setCalculation(null);
-      setError(failure.message || "Unable to calculate salary.");
+      setError(
+        failure.message || "Unable to calculate salary.",
+      );
     }
   }
 
@@ -179,7 +196,17 @@ function SalaryModal({ employee, records, period, onClose }) {
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+            <p className="text-sm text-stone-500">
+              Attendance records
+            </p>
+
+            <p className="mt-2 font-semibold">
+              {records.length}
+            </p>
+          </div>
+
           <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
             <p className="text-sm text-stone-500">
               Monthly production bonus
@@ -192,7 +219,7 @@ function SalaryModal({ employee, records, period, onClose }) {
 
           <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
             <p className="text-sm text-stone-500">
-              Recorded arrival late + personal leave
+              Arrival late + personal leave
             </p>
 
             <p className="mt-2 font-semibold">
@@ -231,7 +258,10 @@ function SalaryModal({ employee, records, period, onClose }) {
             </div>
           )}
 
-          <Button type="submit">
+          <Button
+            type="submit"
+            disabled={!records.length}
+          >
             Calculate salary
           </Button>
         </form>
@@ -259,7 +289,7 @@ function SalaryModal({ employee, records, period, onClose }) {
               className="rounded-2xl bg-emerald-900 p-5 text-white"
             >
               <p className="text-sm text-emerald-100">
-                Final salary after EPF
+                Earned salary after EPF
               </p>
 
               <p className="mt-2 text-3xl font-semibold">
@@ -279,9 +309,20 @@ function SalaryModal({ employee, records, period, onClose }) {
 
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {[
+                  ["Recorded dates", `${records.length} days`],
                   ["Paid leave", `${result.counts.paid} days`],
                   ["Sick leave", `${result.counts.sick} days`],
                   ["No pay", `${result.counts.noPay} days`],
+                  [
+                    "Regular worked time",
+                    duration(
+                      records.reduce(
+                        (total, record) =>
+                          total + Number(record.regular || 0),
+                        0,
+                      ),
+                    ),
+                  ],
                   [
                     "Total late",
                     duration(result.time.lateMinutes),
@@ -452,23 +493,41 @@ export function PayrollPage() {
   const loading = employeesLoading || attendanceLoading;
   const error = employeesError || attendanceError;
 
+  // Only attendance belonging to the selected month.
+  const monthlyAttendance = attendance.filter(
+    (record) =>
+      typeof record.date === "string" &&
+      record.date.startsWith(`${period}-`),
+  );
+
+  const employeeIdsWithAttendance = new Set(
+    monthlyAttendance.map((record) => record.employee),
+  );
+
+  // Employees disappear from this list when their final attendance
+  // record for the selected month is deleted.
+  const payrollEmployees = employees.filter((employee) =>
+    employeeIdsWithAttendance.has(employee.id),
+  );
+
+  // Use the filtered list so an open modal also closes when the
+  // employee no longer has any attendance in this month.
   const selectedEmployee =
     selection?.period === period
-      ? employees.find(
+      ? payrollEmployees.find(
           (employee) => employee.id === selection.id,
         )
       : null;
 
   const selectedRecords = selectedEmployee
-    ? attendance.filter(
-        (record) =>
-          record.employee === selectedEmployee.id &&
-          typeof record.date === "string" &&
-          record.date.startsWith(`${period}-`),
+    ? monthlyAttendance.filter(
+        (record) => record.employee === selectedEmployee.id,
       )
     : [];
 
   function openCalculation(employee) {
+    if (!employeeIdsWithAttendance.has(employee.id)) return;
+
     setSelection({
       id: employee.id,
       period,
@@ -483,7 +542,7 @@ export function PayrollPage() {
     <>
       <PageHeader
         title="Monthly payroll"
-        description={`Select an employee to calculate salary for ${period}.`}
+        description={`Employees with attendance records for ${period}.`}
       />
 
       {error && <Message>{error}</Message>}
@@ -505,55 +564,64 @@ export function PayrollPage() {
                   <th>Travel</th>
                   <th>Meal</th>
                   <th>Production bonus</th>
+                  <th>Recorded dates</th>
                   <th>Actions</th>
                 </tr>
               </thead>
 
               <tbody>
-                {employees.map((employee) => (
-                  <tr key={employee.id}>
-                    <td className="font-semibold">
-                      {employee.name}
-                    </td>
+                {payrollEmployees.map((employee) => {
+                  const recordCount = monthlyAttendance.filter(
+                    (record) => record.employee === employee.id,
+                  ).length;
 
-                    <td>{employee.role}</td>
-
-                    {[
-                      "basic",
-                      "attendance",
-                      "travel",
-                      "meal",
-                      "bonus",
-                    ].map((key) => (
-                      <td key={key}>
-                        {money(employee[key] || 0)}
+                  return (
+                    <tr key={employee.id}>
+                      <td className="font-semibold">
+                        {employee.name}
                       </td>
-                    ))}
 
-                    <td>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          openCalculation(employee)
-                        }
-                        className="whitespace-nowrap font-semibold text-emerald-800 underline"
-                      >
-                        Calculate salary
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                      <td>{employee.role}</td>
+
+                      {[
+                        "basic",
+                        "attendance",
+                        "travel",
+                        "meal",
+                        "bonus",
+                      ].map((key) => (
+                        <td key={key}>
+                          {money(employee[key] || 0)}
+                        </td>
+                      ))}
+
+                      <td>{recordCount}</td>
+
+                      <td>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openCalculation(employee)
+                          }
+                          className="whitespace-nowrap font-semibold text-emerald-800 underline"
+                        >
+                          Calculate salary
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
 
-            {!employees.length && (
-              <p className="py-8">
-                Add employees to calculate payroll.
+            {!payrollEmployees.length && (
+              <p className="py-8 text-center text-stone-500">
+                No attendance records for this pay period.
               </p>
             )}
           </div>
 
-          {selectedEmployee && (
+          {selectedEmployee && selectedRecords.length > 0 && (
             <SalaryModal
               key={`${period}:${selectedEmployee.id}`}
               employee={selectedEmployee}
