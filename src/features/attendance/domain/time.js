@@ -1,9 +1,7 @@
 const SHIFT_START = 8 * 60 + 30;
-const SHIFT_END = 17 * 60 + 30;
+const WEEKDAY_END = 17 * 60 + 30;
+const SATURDAY_REGULAR_END = 13 * 60 + 30;
 const LUNCH_MINUTES = 60;
-
-const REGULAR_DAY_MINUTES =
-  SHIFT_END - SHIFT_START - LUNCH_MINUTES;
 
 function toMinutes(value) {
   if (
@@ -23,6 +21,40 @@ function overlap(start, end, rangeStart, rangeEnd) {
     0,
     Math.min(end, rangeEnd) - Math.max(start, rangeStart),
   );
+}
+
+function getSchedule(date) {
+  if (
+    typeof date !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(date)
+  ) {
+    throw new Error("Select a valid attendance date.");
+  }
+
+  const [year, month, day] = date.split("-").map(Number);
+
+  const parsed = new Date(0);
+  parsed.setUTCFullYear(year, month - 1, day);
+  parsed.setUTCHours(0, 0, 0, 0);
+
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    throw new Error("Select a valid attendance date.");
+  }
+
+  const saturday = parsed.getUTCDay() === 6;
+
+  return {
+    saturday,
+    start: SHIFT_START,
+    regularEnd: saturday
+      ? SATURDAY_REGULAR_END
+      : WEEKDAY_END,
+    regularMinutes: saturday ? 300 : 480,
+  };
 }
 
 export function getPersonalLeaves(record) {
@@ -119,18 +151,14 @@ function getClockDetails(record) {
     };
   });
 
-  intervals.sort(
-    (first, second) => first.start - second.start,
-  );
+  intervals.sort((a, b) => a.start - b.start);
 
   let leave = 0;
   let previousEnd = start;
 
   for (const interval of intervals) {
     if (interval.start < previousEnd) {
-      throw new Error(
-        "Personal leave periods must not overlap.",
-      );
+      throw new Error("Personal leave periods must not overlap.");
     }
 
     leave += interval.end - interval.start;
@@ -140,9 +168,7 @@ function getClockDetails(record) {
   const worked = end - start - leave - breakMinutes;
 
   if (worked < 0) {
-    throw new Error(
-      "Personal leave and breaks exceed the shift.",
-    );
+    throw new Error("Personal leave and breaks exceed the shift.");
   }
 
   return {
@@ -154,6 +180,29 @@ function getClockDetails(record) {
   };
 }
 
+function workedWithin(details, rangeStart, rangeEnd) {
+  const elapsed = overlap(
+    details.start,
+    details.end,
+    rangeStart,
+    rangeEnd,
+  );
+
+  const leave = details.intervals.reduce(
+    (total, interval) =>
+      total +
+      overlap(
+        interval.start,
+        interval.end,
+        rangeStart,
+        rangeEnd,
+      ),
+    0,
+  );
+
+  return Math.max(0, elapsed - leave);
+}
+
 export function calculateClock(record) {
   const { leave, worked } = getClockDetails(record);
 
@@ -161,79 +210,81 @@ export function calculateClock(record) {
 }
 
 export function calculateAttendance(record) {
+  const schedule = getSchedule(record.date);
   const details = getClockDetails(record);
+
   const late = calculateArrivalLate(record.inTime);
 
-  const morningOT = overlap(
-    details.start,
-    details.end,
+  const regularLeave = details.intervals.reduce(
+    (total, interval) =>
+      total +
+      overlap(
+        interval.start,
+        interval.end,
+        schedule.start,
+        schedule.regularEnd,
+      ),
     0,
-    SHIFT_START,
   );
-
-  const eveningOT = overlap(
-    details.start,
-    details.end,
-    SHIFT_END,
-    2880,
-  );
-
-  let regularLeave = 0;
-  let overtimeLeave = 0;
-
-  for (const interval of details.intervals) {
-    regularLeave += overlap(
-      interval.start,
-      interval.end,
-      SHIFT_START,
-      SHIFT_END,
-    );
-
-    overtimeLeave +=
-      overlap(
-        interval.start,
-        interval.end,
-        0,
-        SHIFT_START,
-      ) +
-      overlap(
-        interval.start,
-        interval.end,
-        SHIFT_END,
-        2880,
-      );
-  }
 
   const earlyDeparture = Math.max(
     0,
-    SHIFT_END - Math.max(SHIFT_START, details.end),
+    schedule.regularEnd -
+      Math.max(schedule.start, details.end),
   );
 
   const hasRegularOverlap =
     overlap(
       details.start,
       details.end,
-      SHIFT_START,
-      SHIFT_END,
+      schedule.start,
+      schedule.regularEnd,
     ) > 0;
 
-  let regular = 0;
+  const regular = hasRegularOverlap
+    ? Math.max(
+        0,
+        schedule.regularMinutes -
+          late -
+          regularLeave -
+          earlyDeparture -
+          (record.breakMinutes || 0),
+      )
+    : 0;
 
-  if (hasRegularOverlap) {
-    regular = Math.max(
+  const morningOT = workedWithin(
+    details,
+    0,
+    SHIFT_START,
+  );
+
+  const afterStandardHoursOT = workedWithin(
+    details,
+    WEEKDAY_END,
+    2880,
+  );
+
+  let saturdayOT = 0;
+
+  if (schedule.saturday) {
+    const afternoonWorked = workedWithin(
+      details,
+      SATURDAY_REGULAR_END,
+      WEEKDAY_END,
+    );
+
+    // Lunch is deducted only from Saturday afternoon OT.
+    // Morning and post-17:30 overtime remain unaffected.
+    saturdayOT = Math.max(
       0,
-      REGULAR_DAY_MINUTES -
-        late -
-        regularLeave -
-        earlyDeparture -
-        (record.breakMinutes || 0),
+      afternoonWorked - LUNCH_MINUTES,
     );
   }
 
-  const ot = Math.max(
-    0,
-    morningOT + eveningOT - overtimeLeave,
-  );
+  const ot =
+    morningOT +
+    saturdayOT +
+    afterStandardHoursOT;
 
   if (record.status === "Holiday work") {
     return {
@@ -255,15 +306,13 @@ export function calculateAttendance(record) {
 }
 
 export function validateDurations(record) {
-  const keys = [
+  for (const key of [
     "regular",
     "late",
     "unpaid",
     "ot",
     "double",
-  ];
-
-  for (const key of keys) {
+  ]) {
     if (
       !Number.isInteger(record[key]) ||
       record[key] < 0 ||
@@ -275,9 +324,7 @@ export function validateDurations(record) {
     }
   }
 
-  if (
-    record.regular + record.ot + record.double > 1440
-  ) {
+  if (record.regular + record.ot + record.double > 1440) {
     throw new Error("Worked time exceeds 24 hours.");
   }
 }
