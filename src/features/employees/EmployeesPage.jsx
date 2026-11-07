@@ -1,6 +1,15 @@
-// src/features/employees/EmployeesPage.jsx
-
 import { useState } from "react";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  limit,
+  query,
+  where,
+} from "firebase/firestore";
+
+import { db } from "../../lib/firebase/client";
 import { useRecords } from "../../shared/hooks/useRecords";
 import { Button, Field, PageHeader, Message } from "../../shared/ui";
 import { Modal } from "../../shared/ui/Modal";
@@ -9,11 +18,34 @@ import { money } from "../../shared/utils/format";
 const blank = {
   name: "",
   role: "",
-  basic: 30000,
+  basic: 0,
   attendance: 0,
   travel: 0,
   meal: 0,
   bonus: 0,
+};
+
+const employeeTypes = {
+  "45000": {
+    label: "Basic Allowance 45,000",
+    amounts: {
+      basic: 45000,
+      attendance: 20000,
+      travel: 10000,
+      meal: 7000,
+      bonus: 15000,
+    },
+  },
+  "30000": {
+    label: "Basic Allowance 30,000",
+    amounts: {
+      basic: 30000,
+      attendance: 0,
+      travel: 6000,
+      meal: 7000,
+      bonus: 0,
+    },
+  },
 };
 
 const amountFields = [
@@ -24,72 +56,222 @@ const amountFields = [
   ["bonus", "Production bonus"],
 ];
 
+function inferEmployeeType(employee) {
+  if (!employee?.id) return "";
+
+  if (
+    Number(employee.attendance) > 0 ||
+    Number(employee.bonus) > 0 ||
+    Number(employee.basic) === 45000
+  ) {
+    return "45000";
+  }
+
+  return "30000";
+}
+
 export function EmployeesPage() {
   const { records, saveRecord, error, loading } = useRecords("employees");
 
   const [editing, setEditing] = useState(null);
+  const [employeeType, setEmployeeType] = useState("");
   const [message, setMessage] = useState("");
   const [formError, setFormError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const open = (employee) => {
+  const [deleteEmployee, setDeleteEmployee] = useState(null);
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  const busy = saving || deleting;
+
+  const visibleAmountFields = amountFields.filter(
+    ([key]) =>
+      employeeType !== "30000" ||
+      (key !== "attendance" && key !== "bonus"),
+  );
+
+  function open(employee = null) {
+    if (busy || loading || error || deleteEmployee) return;
+
     setMessage("");
     setFormError("");
-    setEditing({ ...employee });
-  };
+    setEmployeeType(inferEmployeeType(employee));
+    setEditing({ ...blank, ...(employee || {}) });
+  }
 
-  const close = () => {
-    if (busy) return;
+  function close() {
+    if (saving) return;
 
     setEditing(null);
+    setEmployeeType("");
     setFormError("");
-  };
+  }
 
-  const update = (key, value) => {
+  function update(key, value) {
+    if (saving) return;
+
+    setFormError("");
     setEditing((previous) => ({
       ...previous,
       [key]: value,
     }));
-  };
+  }
 
-  const save = async (event) => {
+  function changeEmployeeType(value) {
+    if (saving) return;
+
+    setEmployeeType(value);
+    setFormError("");
+
+    const amounts = employeeTypes[value]?.amounts || {
+      basic: 0,
+      attendance: 0,
+      travel: 0,
+      meal: 0,
+      bonus: 0,
+    };
+
+    setEditing((previous) => ({
+      ...previous,
+      ...amounts,
+    }));
+  }
+
+  async function save(event) {
     event.preventDefault();
-    if (busy) return;
+
+    if (busy || !editing) return;
 
     setFormError("");
-    setBusy(true);
+    setSaving(true);
 
     try {
-      if (!editing.name.trim()) {
+      const name = editing.name.trim();
+      const role = editing.role.trim();
+
+      if (!name) {
         throw new Error("Employee name is required.");
       }
 
-      if (!editing.role.trim()) {
+      if (!role) {
         throw new Error("Employee role is required.");
       }
 
-      for (const [key] of amountFields) {
-        if (!Number.isFinite(editing[key]) || editing[key] < 0) {
-          throw new Error(
-            "Salary and allowance amounts must be zero or greater.",
-          );
-        }
+      if (!employeeTypes[employeeType]) {
+        throw new Error("Select an employee type.");
       }
 
-      await saveRecord({
-        ...editing,
-        name: editing.name.trim(),
-        role: editing.role.trim(),
-      });
+      const amounts = {};
+
+      for (const [key, label] of amountFields) {
+        const excluded =
+          employeeType === "30000" &&
+          (key === "attendance" || key === "bonus");
+
+        const value = excluded ? 0 : editing[key];
+
+        if (
+          value === null ||
+          value === undefined ||
+          String(value).trim() === ""
+        ) {
+          throw new Error(`Enter ${label.toLowerCase()}.`);
+        }
+
+        const amount = Number(value);
+
+        if (
+          !Number.isFinite(amount) ||
+          amount < 0 ||
+          amount > 100000000
+        ) {
+          throw new Error(
+            `${label} must be between 0 and 100,000,000.`,
+          );
+        }
+
+        amounts[key] = amount;
+      }
+
+      // Preserve the existing Firestore document schema.
+      const employee = {
+        name,
+        role,
+        ...amounts,
+      };
+
+      if (editing.id) {
+        employee.id = editing.id;
+      }
+
+      await saveRecord(employee);
 
       setEditing(null);
-      setMessage("Employee saved.");
+      setEmployeeType("");
+      setMessage("Employee saved successfully.");
     } catch (error) {
-      setFormError(error.message);
+      setFormError(error.message || "Unable to save employee.");
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
-  };
+  }
+
+  function openDelete(employee) {
+    if (busy || editing || loading || error) return;
+
+    setMessage("");
+    setDeleteError("");
+    setDeleteEmployee(employee);
+  }
+
+  function closeDelete() {
+    if (deleting) return;
+
+    setDeleteEmployee(null);
+    setDeleteError("");
+  }
+
+  async function confirmDelete() {
+    if (busy || !deleteEmployee?.id) return;
+
+    setDeleting(true);
+    setDeleteError("");
+
+    try {
+      if (!db) {
+        throw new Error("Firebase is not configured.");
+      }
+
+      // Avoid leaving existing attendance without an employee profile.
+      const attendanceSnapshot = await getDocs(
+        query(
+          collection(db, "attendance"),
+          where("employee", "==", deleteEmployee.id),
+          limit(1),
+        ),
+      );
+
+      if (!attendanceSnapshot.empty) {
+        throw new Error(
+          "This employee has attendance records and cannot be deleted.",
+        );
+      }
+
+      await deleteDoc(doc(db, "employees", deleteEmployee.id));
+
+      setMessage(`${deleteEmployee.name} deleted successfully.`);
+      setDeleteEmployee(null);
+    } catch (error) {
+      setDeleteError(
+        error.code === "permission-denied"
+          ? "Permission denied. Check the published Firestore rules."
+          : error.message || "Unable to delete employee.",
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   return (
     <>
@@ -97,7 +279,13 @@ export function EmployeesPage() {
         title="Employee profiles"
         description="Individual salaries and monthly allowances."
         action={
-          <Button onClick={() => open(blank)}>+ Add employee</Button>
+          <Button
+            type="button"
+            disabled={busy || loading || Boolean(error)}
+            onClick={() => open()}
+          >
+            + Add employee
+          </Button>
         }
       />
 
@@ -114,7 +302,7 @@ export function EmployeesPage() {
               <th>Travel</th>
               <th>Meal</th>
               <th>Bonus</th>
-              <th />
+              <th>Actions</th>
             </tr>
           </thead>
 
@@ -129,12 +317,25 @@ export function EmployeesPage() {
                 ))}
 
                 <td>
-                  <button
-                    className="text-emerald-800 underline"
-                    onClick={() => open(employee)}
-                  >
-                    Edit
-                  </button>
+                  <div className="flex items-center gap-4 whitespace-nowrap">
+                    <button
+                      type="button"
+                      disabled={busy || Boolean(error)}
+                      onClick={() => open(employee)}
+                      className="font-medium text-emerald-800 underline disabled:opacity-50"
+                    >
+                      Edit
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={busy || Boolean(error)}
+                      onClick={() => openDelete(employee)}
+                      className="font-medium text-red-600 underline disabled:opacity-50"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -145,7 +346,9 @@ export function EmployeesPage() {
           <p className="py-8">
             {loading
               ? "Loading…"
-              : "No employees yet. Add your first employee."}
+              : error
+                ? "Unable to load employees."
+                : "No employees yet. Add your first employee."}
           </p>
         )}
       </div>
@@ -153,14 +356,14 @@ export function EmployeesPage() {
       {editing && (
         <Modal
           title={editing.id ? "Edit employee" : "Add employee"}
-          description="Enter employee details and monthly amounts in LKR."
+          description="Enter employee details and select a salary package."
           onClose={close}
-          busy={busy}
+          busy={saving}
         >
           <form onSubmit={save}>
             <fieldset
-              disabled={busy}
-              className="m-0 min-w-0 space-y-5 border-0 p-6"
+              disabled={saving}
+              className="m-0 min-w-0 space-y-6 border-0 p-6"
             >
               {formError && (
                 <div
@@ -171,72 +374,189 @@ export function EmployeesPage() {
                 </div>
               )}
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Employee name">
-                  <input
-                    autoFocus
-                    required
-                    maxLength={150}
-                    type="text"
-                    autoComplete="off"
-                    placeholder="Enter full name"
-                    value={editing.name}
-                    onChange={(event) => update("name", event.target.value)}
-                  />
-                </Field>
-
-                <Field label="Role">
-                  <input
-                    required
-                    maxLength={100}
-                    type="text"
-                    placeholder="e.g. Production technician"
-                    value={editing.role}
-                    onChange={(event) => update("role", event.target.value)}
-                  />
-                </Field>
-              </div>
-
-              <div className="border-t border-stone-100 pt-5">
+              <section>
                 <h3 className="mb-4 text-sm font-semibold">
-                  Salary and allowances
+                  Employee details
                 </h3>
 
                 <div className="grid gap-4 sm:grid-cols-2">
-                  {amountFields.map(([key, label]) => (
-                    <Field key={key} label={`${label} (LKR)`}>
-                      <input
+                  <Field label="Employee name">
+                    <input
+                      autoFocus
+                      required
+                      type="text"
+                      maxLength={150}
+                      autoComplete="off"
+                      placeholder="Enter full name"
+                      value={editing.name}
+                      onChange={(event) =>
+                        update("name", event.target.value)
+                      }
+                    />
+                  </Field>
+
+                  <Field label="Role">
+                    <input
+                      required
+                      type="text"
+                      maxLength={100}
+                      placeholder="Enter employee role"
+                      value={editing.role}
+                      onChange={(event) =>
+                        update("role", event.target.value)
+                      }
+                    />
+                  </Field>
+
+                  <div className="sm:col-span-2">
+                    <Field label="Employee type">
+                      <select
                         required
-                        min="0"
-                        max="100000000"
-                        step="0.01"
-                        type="number"
-                        value={editing[key]}
+                        value={employeeType}
                         onChange={(event) =>
-                          update(key, Number(event.target.value))
+                          changeEmployeeType(event.target.value)
                         }
-                      />
+                      >
+                        <option value="" disabled>
+                          Select employee type
+                        </option>
+
+                        {Object.entries(employeeTypes).map(
+                          ([value, type]) => (
+                            <option key={value} value={value}>
+                              {type.label}
+                            </option>
+                          ),
+                        )}
+                      </select>
                     </Field>
-                  ))}
+                  </div>
                 </div>
-              </div>
+              </section>
+
+              {!employeeType && (
+                <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                  Select an employee type to display salary and allowances.
+                </p>
+              )}
+
+              {employeeType && (
+                <section className="border-t border-stone-100 pt-5">
+                  <h3 className="mb-2 text-sm font-semibold">
+                    Salary and allowances
+                  </h3>
+
+                  <p className="mb-5 text-sm text-stone-500">
+                    Amounts are filled from the selected employee type.
+                    You can change them before saving.
+                  </p>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {visibleAmountFields.map(([key, label]) => (
+                      <Field key={key} label={`${label} (LKR)`}>
+                        <input
+                          required
+                          type="number"
+                          min="0"
+                          max="100000000"
+                          step="0.01"
+                          value={editing[key]}
+                          onChange={(event) =>
+                            update(key, event.target.value)
+                          }
+                        />
+                      </Field>
+                    ))}
+                  </div>
+
+                  {employeeType === "30000" && (
+                    <p className="mt-4 rounded-lg bg-stone-50 p-3 text-sm text-stone-600">
+                      Attendance allowance and production bonus do not
+                      apply to this employee type.
+                    </p>
+                  )}
+                </section>
+              )}
             </fieldset>
 
             <footer className="sticky bottom-0 flex flex-wrap justify-end gap-3 border-t border-stone-100 bg-[#f8faf6] px-6 py-4">
               <Button
                 type="button"
                 secondary
-                disabled={busy}
+                disabled={saving}
                 onClick={close}
               >
                 Cancel
               </Button>
 
-              <Button type="submit" disabled={busy}>
-                {busy ? "Saving…" : "Save employee"}
+              <Button
+                type="submit"
+                disabled={saving || !employeeType}
+              >
+                {saving ? "Saving…" : "Save employee"}
               </Button>
             </footer>
           </form>
+        </Modal>
+      )}
+
+      {deleteEmployee && (
+        <Modal
+          title="Delete employee"
+          description="Confirm the employee profile you want to delete."
+          onClose={closeDelete}
+          busy={deleting}
+        >
+          <div className="space-y-5 p-6">
+            {deleteError && (
+              <div
+                role="alert"
+                className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+              >
+                {deleteError}
+              </div>
+            )}
+
+            <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+              <p className="text-lg font-semibold">
+                {deleteEmployee.name}
+              </p>
+
+              <p className="mt-1 text-sm text-stone-600">
+                {deleteEmployee.role}
+              </p>
+
+              <p className="mt-3 text-sm">
+                Basic salary: {money(deleteEmployee.basic)}
+              </p>
+            </div>
+
+            <p className="text-sm text-stone-600">
+              This permanently deletes the employee profile. Existing
+              payroll drafts will remain. Employees with attendance
+              records cannot be deleted through this page.
+            </p>
+          </div>
+
+          <footer className="flex flex-wrap justify-end gap-3 border-t border-stone-100 bg-[#f8faf6] px-6 py-4">
+            <Button
+              type="button"
+              secondary
+              disabled={deleting}
+              onClick={closeDelete}
+            >
+              Cancel
+            </Button>
+
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={confirmDelete}
+              className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {deleting ? "Deleting…" : "Delete employee"}
+            </button>
+          </footer>
         </Modal>
       )}
     </>
