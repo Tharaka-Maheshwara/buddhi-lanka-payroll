@@ -33,6 +33,27 @@ const earningKeys = [
   "double",
 ];
 
+function AmountRow({ label, value, deduction = false, bold = false }) {
+  return (
+    <div
+      className={`flex justify-between gap-4 border-b border-stone-100 py-3 ${
+        bold ? "font-semibold" : "text-sm"
+      }`}
+    >
+      <dt>{label}</dt>
+
+      <dd
+        className={`whitespace-nowrap font-medium ${
+          deduction ? "text-red-700" : ""
+        }`}
+      >
+        {deduction ? "− " : ""}
+        {money(value)}
+      </dd>
+    </div>
+  );
+}
+
 function PayrollDetails({ employee, records, period }) {
   const [input, setInput] = useState({
     lateMinutes: "",
@@ -57,7 +78,18 @@ function PayrollDetails({ employee, records, period }) {
       lateMinutes:
         input.lateMinutes === "" ? undefined : input.lateMinutes,
     });
+
+    if (
+      !result.epf ||
+      !Number.isFinite(result.deductions.epf) ||
+      !Number.isFinite(result.totalDeductions)
+    ) {
+      throw new Error(
+        "Update domain/salary.js with the EPF-enabled calculation code.",
+      );
+    }
   } catch (error) {
+    result = null;
     calculationError = error.message;
   }
 
@@ -168,10 +200,7 @@ function PayrollDetails({ employee, records, period }) {
       </div>
 
       {calculationError && (
-        <p
-          role="alert"
-          className="mt-5 text-sm text-red-700"
-        >
+        <p role="alert" className="mt-5 text-sm text-red-700">
           {calculationError}
         </p>
       )}
@@ -196,10 +225,7 @@ function PayrollDetails({ employee, records, period }) {
                 duration(result.time.extraLateMinutes),
               ],
               ["OT", duration(result.time.otMinutes)],
-              [
-                "Double OT",
-                duration(result.time.doubleMinutes),
-              ],
+              ["Double OT", duration(result.time.doubleMinutes)],
             ].map(([label, value]) => (
               <div
                 key={label}
@@ -227,14 +253,8 @@ function PayrollDetails({ employee, records, period }) {
                   ["Basic daily rate", result.rates.daily],
                   ["Basic hourly rate", result.rates.hourly],
                   ["OT hourly rate", result.rates.ot],
-                  [
-                    "Double OT hourly rate",
-                    result.rates.double,
-                  ],
-                  [
-                    "Basic deduction",
-                    result.deductions.basic,
-                  ],
+                  ["Double OT hourly rate", result.rates.double],
+                  ["Basic deduction", result.deductions.basic],
                   [
                     "Attendance penalty",
                     result.deductions.attendance,
@@ -253,20 +273,31 @@ function PayrollDetails({ employee, records, period }) {
                     result.deductions.bonus,
                   ],
                 ].map(([label, value]) => (
-                  <div
+                  <AmountRow
                     key={label}
-                    className="flex justify-between gap-4 border-b border-stone-100 py-3"
-                  >
-                    <dt className="text-sm">
-                      {label}
-                    </dt>
-
-                    <dd className="whitespace-nowrap text-sm font-medium">
-                      {money(value)}
-                    </dd>
-                  </div>
+                    label={label}
+                    value={value}
+                  />
                 ))}
               </dl>
+
+              <div className="mt-5 rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+                <h4 className="text-sm font-semibold text-emerald-900">
+                  Employee EPF calculation
+                </h4>
+
+                <p className="mt-2 text-sm text-emerald-900">
+                  {money(result.epf.base)} × 8% ={" "}
+                  <strong>
+                    {money(result.deductions.epf)}
+                  </strong>
+                </p>
+
+                <p className="mt-2 text-xs text-emerald-800">
+                  Calculated from basic salary after deductions,
+                  following the supplied worksheet.
+                </p>
+              </div>
             </section>
 
             <section className="rounded-xl border border-stone-200 p-5">
@@ -276,42 +307,50 @@ function PayrollDetails({ employee, records, period }) {
 
               <dl>
                 {earningKeys.map((key) => (
-                  <div
+                  <AmountRow
                     key={key}
-                    className="flex justify-between gap-4 border-b border-stone-100 py-3"
-                  >
-                    <dt className="text-sm">
-                      {earningLabels[key]}
-                    </dt>
-
-                    <dd className="whitespace-nowrap text-sm font-medium">
-                      {money(result.earnings[key])}
-                    </dd>
-                  </div>
+                    label={earningLabels[key]}
+                    value={result.earnings[key]}
+                  />
                 ))}
 
-                <div className="flex justify-between gap-4 py-3 font-semibold">
-                  <dt>Gross salary</dt>
-                  <dd>{money(result.gross)}</dd>
-                </div>
+                <AmountRow
+                  label="Gross salary"
+                  value={result.gross}
+                  bold
+                />
 
-                <div className="flex justify-between gap-4 py-2 text-sm">
-                  <dt>Advance</dt>
-                  <dd>
-                    − {money(result.deductions.advance)}
-                  </dd>
-                </div>
+                <AmountRow
+                  label="Employee EPF (8%)"
+                  value={result.deductions.epf}
+                  deduction
+                />
 
-                <div className="flex justify-between gap-4 py-2 text-sm">
-                  <dt>Other deductions</dt>
-                  <dd>
-                    − {money(result.deductions.other)}
-                  </dd>
-                </div>
+                <AmountRow
+                  label="Advance"
+                  value={result.deductions.advance}
+                  deduction
+                />
+
+                <AmountRow
+                  label="Other deductions"
+                  value={result.deductions.other}
+                  deduction
+                />
+
+                <AmountRow
+                  label="Total deductions from gross"
+                  value={result.totalDeductions}
+                  deduction
+                  bold
+                />
 
                 <div className="mt-4 flex justify-between gap-4 rounded-xl bg-emerald-900 p-4 font-semibold text-white">
                   <dt>Net payable</dt>
-                  <dd>{money(result.payable)}</dd>
+
+                  <dd className="whitespace-nowrap">
+                    {money(result.payable)}
+                  </dd>
                 </div>
               </dl>
             </section>
@@ -323,9 +362,8 @@ function PayrollDetails({ employee, records, period }) {
             </h3>
 
             <p className="mt-2 text-sm text-stone-500">
-              Download a separate PDF for {employee.name}. The
-              paysheet includes the current calculation and manual
-              deductions entered above.
+              Download a separate PDF for {employee.name} using
+              the current salary calculation.
             </p>
 
             <DownloadPaysheet
@@ -378,10 +416,21 @@ export function PayrollPage() {
     );
 
     try {
+      const result = calculateSalary(employee, records);
+
+      if (
+        !result.epf ||
+        !Number.isFinite(result.deductions.epf)
+      ) {
+        throw new Error(
+          "Update domain/salary.js with the EPF-enabled calculation.",
+        );
+      }
+
       return {
         employee,
         records,
-        result: calculateSalary(employee, records),
+        result,
         error: "",
       };
     } catch (error) {
@@ -416,6 +465,11 @@ export function PayrollPage() {
 
       {!loading && !error && (
         <>
+          <p className="mb-4 text-sm text-stone-500">
+            Table amounts use default adjustments. Open View /
+            Calculate to enter advances and manual deductions.
+          </p>
+
           <div className="card overflow-x-auto">
             <table>
               <thead>
@@ -429,6 +483,8 @@ export function PayrollPage() {
                   <th>OT</th>
                   <th>Double OT</th>
                   <th>Gross salary</th>
+                  <th>EPF (8%)</th>
+                  <th>Net payable</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -444,19 +500,25 @@ export function PayrollPage() {
                       <>
                         {earningKeys.map((key) => (
                           <td key={key}>
-                            {money(
-                              row.result.earnings[key],
-                            )}
+                            {money(row.result.earnings[key])}
                           </td>
                         ))}
 
                         <td className="font-semibold">
                           {money(row.result.gross)}
                         </td>
+
+                        <td className="text-red-700">
+                          {money(row.result.deductions.epf)}
+                        </td>
+
+                        <td className="font-semibold text-emerald-900">
+                          {money(row.result.payable)}
+                        </td>
                       </>
                     ) : (
                       <td
-                        colSpan={8}
+                        colSpan={10}
                         className="text-red-700"
                       >
                         {row.error}

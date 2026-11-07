@@ -5,7 +5,7 @@ import { Button } from "../../shared/ui";
 import { duration } from "../../shared/utils/format";
 
 function currency(value) {
-  return `LKR ${Number(value || 0).toLocaleString("en-US", {
+  return `LKR ${Number(value).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -34,7 +34,50 @@ async function loadLogo() {
   }
 }
 
+function validateResult(result) {
+  const values = [
+    result?.gross,
+    result?.payable,
+    result?.totalDeductions,
+    result?.epf?.base,
+    result?.epf?.amount,
+    result?.deductions?.epf,
+    result?.deductions?.advance,
+    result?.deductions?.other,
+  ];
+
+  if (values.some((value) => !Number.isFinite(value) || value < 0)) {
+    throw new Error(
+      "Update domain/salary.js with the EPF-enabled calculation before downloading.",
+    );
+  }
+
+  const expectedEPF = Math.round(
+    (result.epf.base * 0.08 + Number.EPSILON) * 100,
+  ) / 100;
+
+  const expectedDeductions =
+    result.deductions.epf +
+    result.deductions.advance +
+    result.deductions.other;
+
+  if (
+    Math.abs(expectedEPF - result.deductions.epf) > 0.011 ||
+    Math.abs(result.epf.amount - result.deductions.epf) > 0.011 ||
+    Math.abs(expectedDeductions - result.totalDeductions) > 0.011 ||
+    Math.abs(
+      result.gross - result.totalDeductions - result.payable,
+    ) > 0.011
+  ) {
+    throw new Error(
+      "Salary totals do not match the EPF calculation. Review the salary calculation.",
+    );
+  }
+}
+
 async function createPaysheet(employee, period, result) {
+  validateResult(result);
+
   const pdf = new jsPDF({
     orientation: "portrait",
     unit: "mm",
@@ -47,12 +90,14 @@ async function createPaysheet(employee, period, result) {
   const margin = 16;
   const right = width - margin;
   const contentWidth = width - margin * 2;
+  const bottomLimit = height - 22;
   const green = [20, 70, 57];
 
   let y = 18;
 
   pdf.setProperties({
     title: `Paysheet - ${employee.name} - ${period}`,
+    subject: "Salary calculation including employee EPF",
     author: "Buddhi Lanka Engineers",
   });
 
@@ -78,7 +123,7 @@ async function createPaysheet(employee, period, result) {
 
       hasLogo = true;
     } catch {
-      // Generate the PDF without the logo if necessary.
+      // Continue without a logo if the image cannot be read.
     }
   }
 
@@ -102,14 +147,15 @@ async function createPaysheet(employee, period, result) {
   y += 8;
 
   function ensureSpace(required) {
-    if (y + required <= height - 22) return;
+    if (y + required <= bottomLimit) return;
 
     pdf.addPage();
     y = 20;
   }
 
   function section(title) {
-    ensureSpace(20);
+    // Keep the heading together with at least the first row.
+    ensureSpace(25);
 
     pdf.setFillColor(...green);
     pdf.rect(margin, y, contentWidth, 8, "F");
@@ -122,7 +168,12 @@ async function createPaysheet(employee, period, result) {
     y += 14;
   }
 
-  function row(label, value, bold = false) {
+  function row(label, value, options = {}) {
+    const {
+      bold = false,
+      deduction = false,
+    } = options;
+
     pdf.setFont("helvetica", bold ? "bold" : "normal");
     pdf.setFontSize(9);
 
@@ -131,7 +182,10 @@ async function createPaysheet(employee, period, result) {
       contentWidth - 65,
     );
 
-    const valueLines = pdf.splitTextToSize(String(value), 60);
+    const valueLines = pdf.splitTextToSize(
+      String(value),
+      60,
+    );
 
     const rowHeight = Math.max(
       7,
@@ -142,6 +196,11 @@ async function createPaysheet(employee, period, result) {
 
     pdf.setTextColor(35);
     pdf.text(labelLines, margin + 2, y);
+
+    if (deduction) {
+      pdf.setTextColor(170, 35, 35);
+    }
+
     pdf.text(valueLines, right - 2, y, {
       align: "right",
     });
@@ -188,9 +247,9 @@ async function createPaysheet(employee, period, result) {
 
   y += 3;
 
-  section("DEDUCTION BREAKDOWN");
+  section("EARNINGS ADJUSTMENTS");
 
-  const deductions = [
+  const earningsDeductions = [
     ["Basic deduction", result.deductions.basic],
     ["Attendance penalty", result.deductions.attendance],
     ["Meal deduction", result.deductions.meal],
@@ -199,7 +258,7 @@ async function createPaysheet(employee, period, result) {
     ["Production bonus deduction", result.deductions.bonus],
   ];
 
-  for (const [label, value] of deductions) {
+  for (const [label, value] of earningsDeductions) {
     row(label, currency(value));
   }
 
@@ -221,9 +280,48 @@ async function createPaysheet(employee, period, result) {
     row(label, currency(value));
   }
 
-  row("Gross salary", currency(result.gross), true);
-  row("Advance", currency(result.deductions.advance));
-  row("Other deductions", currency(result.deductions.other));
+  row("Gross salary", currency(result.gross), {
+    bold: true,
+  });
+
+  y += 3;
+
+  // Keep the final deductions and payable section together.
+  ensureSpace(95);
+
+  section("EPF AND FINAL DEDUCTIONS");
+
+  row(
+    "EPF base: basic after deductions",
+    currency(result.epf.base),
+  );
+
+  row(
+    "Employee EPF (8%)",
+    `- ${currency(result.deductions.epf)}`,
+    { deduction: true },
+  );
+
+  row(
+    "Advance",
+    `- ${currency(result.deductions.advance)}`,
+    { deduction: true },
+  );
+
+  row(
+    "Other deductions",
+    `- ${currency(result.deductions.other)}`,
+    { deduction: true },
+  );
+
+  row(
+    "Total deductions from gross",
+    `- ${currency(result.totalDeductions)}`,
+    {
+      bold: true,
+      deduction: true,
+    },
+  );
 
   ensureSpace(38);
 
@@ -245,9 +343,13 @@ async function createPaysheet(employee, period, result) {
   pdf.setFontSize(11);
 
   pdf.text("NET PAYABLE", margin + 4, y + 8);
-  pdf.text(currency(result.payable), right - 4, y + 8, {
-    align: "right",
-  });
+
+  pdf.text(
+    currency(result.payable),
+    right - 4,
+    y + 8,
+    { align: "right" },
+  );
 
   y += 29;
 
@@ -295,18 +397,27 @@ async function createPaysheet(employee, period, result) {
       .replace(/[^a-zA-Z0-9_-]+/g, "_")
       .slice(0, 70) || "Employee";
 
+  const safePeriod = String(period).replace(
+    /[^a-zA-Z0-9_-]/g,
+    "_",
+  );
+
   await pdf.save(
-    `Paysheet_${safeName}_${period}.pdf`,
+    `Paysheet_${safeName}_${safePeriod}.pdf`,
     { returnPromise: true },
   );
 }
 
-export function DownloadPaysheet({ employee, period, result }) {
+export function DownloadPaysheet({
+  employee,
+  period,
+  result,
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   async function download() {
-    if (!result || busy) return;
+    if (!result || !employee || busy) return;
 
     setBusy(true);
     setError("");
@@ -315,8 +426,10 @@ export function DownloadPaysheet({ employee, period, result }) {
       await createPaysheet(employee, period, result);
     } catch (error) {
       console.error("Paysheet download failed:", error);
+
       setError(
-        "Unable to download the paysheet. Please try again.",
+        error.message ||
+          "Unable to download the paysheet. Please try again.",
       );
     } finally {
       setBusy(false);
@@ -327,7 +440,7 @@ export function DownloadPaysheet({ employee, period, result }) {
     <div className="mt-5">
       <Button
         type="button"
-        disabled={busy || !result}
+        disabled={busy || !result || !employee}
         onClick={download}
       >
         {busy ? "Creating PDF…" : "Download paysheet"}

@@ -1,17 +1,18 @@
 const BASIC_DAYS = 25;
 const ALLOWANCE_DAYS = 26;
 const DAY_MINUTES = 480;
+const EPF_RATE = 0.08;
 
-const round = (value, digits = 2) => {
+function round(value, digits = 2) {
   const factor = 10 ** digits;
   return Math.round((value + Number.EPSILON) * factor) / factor;
-};
+}
 
 function amount(value, label) {
   if (
-    value === "" ||
     value === null ||
-    value === undefined
+    value === undefined ||
+    String(value).trim() === ""
   ) {
     throw new Error(`Enter ${label}.`);
   }
@@ -29,7 +30,7 @@ function minutes(value, label) {
   const number = Number(value ?? 0);
 
   if (!Number.isSafeInteger(number) || number < 0) {
-    throw new Error(`${label} must be whole positive minutes or zero.`);
+    throw new Error(`${label} must be whole minutes, zero or greater.`);
   }
 
   return number;
@@ -40,7 +41,6 @@ function allowanceDeduction(monthly, days, extraMinutes) {
   const hours = Math.floor(extraMinutes / 60);
   const remainingMinutes = extraMinutes % 60;
 
-  // Round each deduction separately, as in the notebook example.
   return round(
     round(daily * days, 1) +
       round((daily / 8) * hours, 1) +
@@ -50,19 +50,34 @@ function allowanceDeduction(monthly, days, extraMinutes) {
 
 export function calculateSalary(employee, records, adjustments = {}) {
   const basic = amount(employee.basic, "basic salary");
+
   const attendance = amount(
     employee.attendance ?? 0,
     "attendance allowance",
   );
-  const travel = amount(employee.travel ?? 0, "travelling allowance");
+
+  const travel = amount(
+    employee.travel ?? 0,
+    "travelling allowance",
+  );
+
   const meal = amount(employee.meal ?? 0, "meal allowance");
-  const bonus = amount(employee.bonus ?? 0, "production bonus");
+
+  const bonus = amount(
+    employee.bonus ?? 0,
+    "production bonus",
+  );
 
   const bonusDeduction = amount(
     adjustments.bonusDeduction ?? 0,
     "production bonus deduction",
   );
-  const advance = amount(adjustments.advance ?? 0, "advance");
+
+  const advance = amount(
+    adjustments.advance ?? 0,
+    "advance",
+  );
+
   const otherDeduction = amount(
     adjustments.otherDeduction ?? 0,
     "other deductions",
@@ -97,21 +112,24 @@ export function calculateSalary(employee, records, adjustments = {}) {
     0,
   );
 
-  // Optional override includes any approved early departure time.
   const lateMinutes =
     adjustments.lateMinutes === undefined
       ? arrivalLate + personalLeave
-      : minutes(adjustments.lateMinutes, "Approved monthly late time");
+      : minutes(
+          adjustments.lateMinutes,
+          "Approved monthly late time",
+        );
 
   const lateDays = Math.floor(lateMinutes / DAY_MINUTES);
   const extraLateMinutes = lateMinutes % DAY_MINUTES;
 
   const deductionDays = paid + sick + noPay + lateDays;
 
-  // Paid/Sick leave does not reduce basic salary.
+  // Paid and Sick leave do not reduce basic salary.
   const basicUnpaidMinutes = noPay * DAY_MINUTES + lateMinutes;
 
   const hourlyRate = basic / BASIC_DAYS / 8;
+
   const basicDeduction = round(
     (basicUnpaidMinutes / 60) * hourlyRate,
   );
@@ -122,7 +140,8 @@ export function calculateSalary(employee, records, adjustments = {}) {
   );
 
   const doubleMinutes = workedRecords.reduce(
-    (total, record) => total + minutes(record.double, "Double OT"),
+    (total, record) =>
+      total + minutes(record.double, "Double OT"),
     0,
   );
 
@@ -132,15 +151,26 @@ export function calculateSalary(employee, records, adjustments = {}) {
   const otPay = round((otMinutes / 60) * otRate);
   const doublePay = round((doubleMinutes / 60) * doubleRate);
 
-  // The current employee schema does not store employeeType.
-  // Employees with an attendance allowance/bonus use the 45k package.
   const is45000Type =
     attendance > 0 || bonus > 0 || basic === 45000;
 
   const penaltyCount = Math.min(deductionDays, 4);
 
-  const attendancePenalties = [0, 2000, 6000, 12000, 20000];
-  const travelPenalties = [0, 500, 1500, 3500, 6000];
+  const attendancePenalties = [
+    0,
+    2000,
+    6000,
+    12000,
+    20000,
+  ];
+
+  const travelPenalties = [
+    0,
+    500,
+    1500,
+    3500,
+    6000,
+  ];
 
   const attendancePenalty = is45000Type
     ? Math.min(attendance, attendancePenalties[penaltyCount])
@@ -170,25 +200,45 @@ export function calculateSalary(employee, records, adjustments = {}) {
 
   const earnings = {
     basic: round(Math.max(0, basic - basicDeduction)),
-    attendance: round(Math.max(0, attendance - attendancePenalty)),
+
+    attendance: round(
+      Math.max(0, attendance - attendancePenalty),
+    ),
+
     travel: round(
       Math.max(0, travel - travelDeduction - travelPenalty),
     ),
+
     meal: round(Math.max(0, meal - mealDeduction)),
+
     bonus: round(bonus - bonusDeduction),
+
     ot: otPay,
+
     double: doublePay,
   };
 
   const gross = round(
-    Object.values(earnings).reduce((total, value) => total + value, 0),
+    Object.values(earnings).reduce(
+      (total, value) => total + value,
+      0,
+    ),
   );
 
-  const payable = round(gross - advance - otherDeduction);
+  // Match the supplied worksheet:
+  // EPF = adjusted basic salary × 8%.
+  const epfBase = earnings.basic;
+  const epf = round(epfBase * EPF_RATE);
+
+  const totalDeductions = round(
+    epf + advance + otherDeduction,
+  );
+
+  const payable = round(gross - totalDeductions);
 
   if (payable < 0) {
     throw new Error(
-      "Advance and other deductions exceed the available salary.",
+      "EPF, advance and other deductions exceed the available salary.",
     );
   }
 
@@ -196,6 +246,14 @@ export function calculateSalary(employee, records, adjustments = {}) {
     earnings,
     gross,
     payable,
+    totalDeductions,
+
+    epf: {
+      rate: EPF_RATE,
+      base: epfBase,
+      amount: epf,
+    },
+
     counts: {
       paid,
       sick,
@@ -203,6 +261,7 @@ export function calculateSalary(employee, records, adjustments = {}) {
       lateDays,
       deductionDays,
     },
+
     time: {
       arrivalLate,
       personalLeave,
@@ -211,12 +270,14 @@ export function calculateSalary(employee, records, adjustments = {}) {
       otMinutes,
       doubleMinutes,
     },
+
     rates: {
       daily: basic / BASIC_DAYS,
       hourly: hourlyRate,
       ot: otRate,
       double: doubleRate,
     },
+
     deductions: {
       basic: basicDeduction,
       attendance: attendancePenalty,
@@ -224,6 +285,7 @@ export function calculateSalary(employee, records, adjustments = {}) {
       travel: travelDeduction,
       travelPenalty,
       bonus: bonusDeduction,
+      epf,
       advance,
       other: otherDeduction,
     },
