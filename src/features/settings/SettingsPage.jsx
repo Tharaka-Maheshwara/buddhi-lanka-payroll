@@ -1,9 +1,0 @@
-import {useState,useEffect} from 'react';
-import {useRecords} from '../../shared/hooks/useRecords';
-import {defaultRules} from '../payroll/domain/calculate';
-import {PageHeader,Field,Button,Message} from '../../shared/ui';
-export function SettingsPage(){const {records,saveRecord,error}=useRecords('settings'),[rules,setRules]=useState(defaultRules),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
- useEffect(()=>{const saved=records.find(r=>r.id==='payroll');if(saved)setRules({days:saved.days,hours:saved.hours,ot:saved.ot,double:saved.double})},[records]);
- const submit=async e=>{e.preventDefault();setBusy(true);try{await saveRecord({...rules,id:'payroll'});setMessage('Draft calculation rates saved.')}catch(e){setMessage(e.message)}finally{setBusy(false)}};
- return <><PageHeader title="Calculation settings" description="Working assumptions that can change when company rules are confirmed."/>{(error||message)&&<Message>{error||message}</Message>}<div className="grid gap-5 lg:grid-cols-2"><form className="card" onSubmit={submit}><h2>Draft calculation rates</h2><div className="grid grid-cols-2 gap-4">{Object.entries(rules).map(([key,value])=><Field key={key} label={{days:'Salary divisor in days',hours:'Hours per pay day',ot:'OT multiplier',double:'Double pay multiplier'}[key]}><input required min="0.01" step="0.01" type="number" value={value} onChange={e=>setRules({...rules,[key]:Number(e.target.value)})}/></Field>)}</div><Button disabled={busy} className="button mt-6">Save settings</Button></form><div className="card"><h2>Pending company confirmation</h2><p>Attendance allowance deductions, paid and sick leave, meal and travel reductions, separate 30/45 minute payments, contribution eligibility and salary proration.</p><p className="mt-4">Administrator permissions are assigned through Firebase custom claims. A new login alone does not grant access.</p></div></div></>
-}
