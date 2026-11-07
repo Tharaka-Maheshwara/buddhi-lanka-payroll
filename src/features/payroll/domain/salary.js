@@ -5,7 +5,10 @@ const EPF_RATE = 0.08;
 
 function round(value, digits = 2) {
   const factor = 10 ** digits;
-  return Math.round((value + Number.EPSILON) * factor) / factor;
+
+  return Math.round(
+    (value + Number.EPSILON) * factor,
+  ) / factor;
 }
 
 function amount(value, label) {
@@ -29,41 +32,40 @@ function amount(value, label) {
 function minutes(value, label) {
   const number = Number(value ?? 0);
 
-  if (!Number.isSafeInteger(number) || number < 0) {
-    throw new Error(`${label} must be whole minutes, zero or greater.`);
+  if (
+    !Number.isSafeInteger(number) ||
+    number < 0 ||
+    number > 1440
+  ) {
+    throw new Error(
+      `${label} must be whole minutes between 0 and 1440.`,
+    );
   }
 
   return number;
 }
 
-function allowanceDeduction(monthly, days, extraMinutes) {
-  const daily = monthly / ALLOWANCE_DAYS;
-  const hours = Math.floor(extraMinutes / 60);
-  const remainingMinutes = extraMinutes % 60;
-
-  return round(
-    round(daily * days, 1) +
-      round((daily / 8) * hours, 1) +
-      round((daily / DAY_MINUTES) * remainingMinutes, 1),
-  );
-}
-
-export function calculateSalary(employee, records, adjustments = {}) {
-  const basic = amount(employee.basic, "basic salary");
-
-  const attendance = amount(
-    employee.attendance ?? 0,
-    "attendance allowance",
+export function calculateSalary(
+  employee,
+  records,
+  adjustments = {},
+) {
+  const monthlyBasic = amount(
+    employee.basic,
+    "basic salary",
   );
 
-  const travel = amount(
+  const monthlyTravel = amount(
     employee.travel ?? 0,
     "travelling allowance",
   );
 
-  const meal = amount(employee.meal ?? 0, "meal allowance");
+  const monthlyMeal = amount(
+    employee.meal ?? 0,
+    "meal allowance",
+  );
 
-  const bonus = amount(
+  const monthlyBonus = amount(
     employee.bonus ?? 0,
     "production bonus",
   );
@@ -83,87 +85,194 @@ export function calculateSalary(employee, records, adjustments = {}) {
     "other deductions",
   );
 
-  const paid = records.filter(
-    (record) => record.status === "Paid leave",
-  ).length;
+  const dailyBasicRate = monthlyBasic / BASIC_DAYS;
+  const hourlyRate = dailyBasicRate / 8;
+  const minuteRate = hourlyRate / 60;
 
-  const sick = records.filter(
-    (record) => record.status === "Sick leave",
-  ).length;
+  const otRate = hourlyRate * 1.5;
+  const doubleRate = hourlyRate * 2;
 
-  const noPay = records.filter(
-    (record) => record.status === "No pay",
-  ).length;
+  const dailyTravelRate = monthlyTravel / ALLOWANCE_DAYS;
+  const dailyMealRate = monthlyMeal / ALLOWANCE_DAYS;
+  const dailyBonusRate = monthlyBonus / ALLOWANCE_DAYS;
 
-  const workedRecords = records.filter(
-    (record) =>
-      !["Paid leave", "Sick leave", "No pay"].includes(record.status),
-  );
+  let paid = 0;
+  let sick = 0;
+  let noPay = 0;
+  let attendedDays = 0;
+  let holidayDays = 0;
 
-  const arrivalLate = workedRecords.reduce(
-    (total, record) =>
-      total + minutes(record.late, "Arrival late time"),
-    0,
-  );
+  let regularMinutes = 0;
+  let paidLeaveMinutes = 0;
 
-  const personalLeave = workedRecords.reduce(
-    (total, record) =>
-      total + minutes(record.leaveDuration, "Personal leave time"),
-    0,
-  );
+  let arrivalLate = 0;
+  let personalLeave = 0;
 
-  const lateMinutes =
-    adjustments.lateMinutes === undefined
-      ? arrivalLate + personalLeave
-      : minutes(
-          adjustments.lateMinutes,
-          "Approved monthly late time",
-        );
+  let otMinutes = 0;
+  let doubleMinutes = 0;
 
+  let allowanceLateMinutes = 0;
+
+  const seenDates = new Set();
+
+  for (const record of records) {
+    if (
+      typeof record.date !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(record.date)
+    ) {
+      throw new Error("An attendance record has an invalid date.");
+    }
+
+    if (seenDates.has(record.date)) {
+      throw new Error(
+        `Duplicate attendance found for ${record.date}.`,
+      );
+    }
+
+    seenDates.add(record.date);
+
+    if (record.status === "Paid leave") {
+      paid++;
+      paidLeaveMinutes += DAY_MINUTES;
+      continue;
+    }
+
+    if (record.status === "Sick leave") {
+      sick++;
+      paidLeaveMinutes += DAY_MINUTES;
+      continue;
+    }
+
+    if (record.status === "No pay") {
+      noPay++;
+      continue;
+    }
+
+    if (
+      !["Present", "Partial day", "Holiday work"].includes(
+        record.status,
+      )
+    ) {
+      throw new Error(
+        `Invalid attendance type for ${record.date}.`,
+      );
+    }
+
+    const regular = minutes(
+      record.regular,
+      "Regular worked time",
+    );
+
+    const ot = minutes(record.ot, "OT");
+    const double = minutes(record.double, "Double OT");
+
+    const late = minutes(
+      record.late,
+      "Arrival late",
+    );
+
+    const leave = minutes(
+      record.leaveDuration,
+      "Personal leave",
+    );
+
+    if (regular + ot + double > 1440) {
+      throw new Error(
+        `Worked time exceeds 24 hours on ${record.date}.`,
+      );
+    }
+
+    arrivalLate += late;
+    personalLeave += leave;
+
+    regularMinutes += regular;
+    otMinutes += ot;
+    doubleMinutes += double;
+
+    if (record.status === "Holiday work") {
+      holidayDays++;
+    } else {
+      // A regular working day earns daily allowances and bonus.
+      attendedDays++;
+      allowanceLateMinutes += late + leave;
+    }
+  }
+
+  const lateMinutes = arrivalLate + personalLeave;
   const lateDays = Math.floor(lateMinutes / DAY_MINUTES);
   const extraLateMinutes = lateMinutes % DAY_MINUTES;
 
   const deductionDays = paid + sick + noPay + lateDays;
 
-  // Paid and Sick leave do not reduce basic salary.
-  const basicUnpaidMinutes = noPay * DAY_MINUTES + lateMinutes;
+  // Basic is earned from actual regular minutes.
+  // Paid/Sick leave receives an 8-hour basic credit per day.
+  const basicPaidMinutes =
+    regularMinutes + paidLeaveMinutes;
 
-  const hourlyRate = basic / BASIC_DAYS / 8;
-
-  const basicDeduction = round(
-    (basicUnpaidMinutes / 60) * hourlyRate,
+  const earnedBasic = round(
+    basicPaidMinutes * minuteRate,
   );
 
-  const otMinutes = workedRecords.reduce(
-    (total, record) => total + minutes(record.ot, "OT"),
-    0,
+  // Recorded regular minutes already reflect late/personal leave.
+  // Do not deduct late time from Basic a second time.
+  const basicDeduction = 0;
+
+  const otPay = round(
+    (otMinutes / 60) * otRate,
   );
 
-  const doubleMinutes = workedRecords.reduce(
-    (total, record) =>
-      total + minutes(record.double, "Double OT"),
-    0,
+  const doublePay = round(
+    (doubleMinutes / 60) * doubleRate,
   );
 
-  const otRate = hourlyRate * 1.5;
-  const doubleRate = hourlyRate * 2;
+  // Earn allowances only for recorded regular attendance days.
+  // Paid/Sick/No-pay days do not receive these allowances.
+  const travelBeforeDeductions = round(
+    dailyTravelRate * attendedDays,
+  );
 
-  const otPay = round((otMinutes / 60) * otRate);
-  const doublePay = round((doubleMinutes / 60) * doubleRate);
+  const mealBeforeDeductions = round(
+    dailyMealRate * attendedDays,
+  );
+
+  // Separate one-decimal rounding follows the notebook method.
+  const allowanceLateHours = Math.floor(
+    allowanceLateMinutes / 60,
+  );
+
+  const allowanceLateRemainder =
+    allowanceLateMinutes % 60;
+
+  function lateAllowanceDeduction(monthlyAmount) {
+    const daily = monthlyAmount / ALLOWANCE_DAYS;
+
+    return round(
+      round(
+        (daily / 8) * allowanceLateHours,
+        1,
+      ) +
+        round(
+          (daily / DAY_MINUTES) * allowanceLateRemainder,
+          1,
+        ),
+    );
+  }
+
+  const travelDeduction = lateAllowanceDeduction(
+    monthlyTravel,
+  );
+
+  const mealDeduction = lateAllowanceDeduction(
+    monthlyMeal,
+  );
 
   const is45000Type =
-    attendance > 0 || bonus > 0 || basic === 45000;
+    Number(employee.attendance || 0) > 0 ||
+    monthlyBonus > 0 ||
+    monthlyBasic === 45000;
 
-  const penaltyCount = Math.min(deductionDays, 4);
-
-  const attendancePenalties = [
-    0,
-    2000,
-    6000,
-    12000,
-    20000,
-  ];
-
+  // Keep the previously confirmed 30k Travel penalty.
+  // Do not apply an Attendance allowance or penalty in this mode.
   const travelPenalties = [
     0,
     500,
@@ -172,46 +281,45 @@ export function calculateSalary(employee, records, adjustments = {}) {
     6000,
   ];
 
-  const attendancePenalty = is45000Type
-    ? Math.min(attendance, attendancePenalties[penaltyCount])
-    : 0;
-
   const travelPenalty = is45000Type
     ? 0
-    : travelPenalties[penaltyCount];
+    : travelPenalties[Math.min(deductionDays, 4)];
 
-  const mealDeduction = allowanceDeduction(
-    meal,
-    deductionDays,
-    extraLateMinutes,
+  // Round after multiplying, so daily rounding does not accumulate.
+  const earnedBonus = round(
+    dailyBonusRate * attendedDays,
   );
 
-  const travelDeduction = allowanceDeduction(
-    travel,
-    deductionDays,
-    extraLateMinutes,
-  );
-
-  if (bonusDeduction > bonus) {
+  if (bonusDeduction > earnedBonus) {
     throw new Error(
-      "Production bonus deduction cannot exceed the production bonus.",
+      `Production bonus deduction cannot exceed the earned bonus of LKR ${earnedBonus.toFixed(2)}.`,
     );
   }
 
   const earnings = {
-    basic: round(Math.max(0, basic - basicDeduction)),
+    basic: earnedBasic,
 
-    attendance: round(
-      Math.max(0, attendance - attendancePenalty),
-    ),
+    attendance: 0,
 
     travel: round(
-      Math.max(0, travel - travelDeduction - travelPenalty),
+      Math.max(
+        0,
+        travelBeforeDeductions -
+          travelDeduction -
+          travelPenalty,
+      ),
     ),
 
-    meal: round(Math.max(0, meal - mealDeduction)),
+    meal: round(
+      Math.max(
+        0,
+        mealBeforeDeductions - mealDeduction,
+      ),
+    ),
 
-    bonus: round(bonus - bonusDeduction),
+    bonus: round(
+      earnedBonus - bonusDeduction,
+    ),
 
     ot: otPay,
 
@@ -225,8 +333,7 @@ export function calculateSalary(employee, records, adjustments = {}) {
     ),
   );
 
-  // Match the supplied worksheet:
-  // EPF = adjusted basic salary × 8%.
+  // Follow the supplied worksheet's Basic-only EPF base.
   const epfBase = earnings.basic;
   const epf = round(epfBase * EPF_RATE);
 
@@ -234,11 +341,13 @@ export function calculateSalary(employee, records, adjustments = {}) {
     epf + advance + otherDeduction,
   );
 
-  const payable = round(gross - totalDeductions);
+  const payable = round(
+    gross - totalDeductions,
+  );
 
   if (payable < 0) {
     throw new Error(
-      "EPF, advance and other deductions exceed the available salary.",
+      "EPF, advance and other deductions exceed the earned salary.",
     );
   }
 
@@ -258,11 +367,17 @@ export function calculateSalary(employee, records, adjustments = {}) {
       paid,
       sick,
       noPay,
+      attendedDays,
+      holidayDays,
+      recordedDays: records.length,
       lateDays,
       deductionDays,
     },
 
     time: {
+      regularMinutes,
+      paidLeaveMinutes,
+      basicPaidMinutes,
       arrivalLate,
       personalLeave,
       lateMinutes,
@@ -272,15 +387,18 @@ export function calculateSalary(employee, records, adjustments = {}) {
     },
 
     rates: {
-      daily: basic / BASIC_DAYS,
+      daily: dailyBasicRate,
       hourly: hourlyRate,
       ot: otRate,
       double: doubleRate,
+      travelDaily: dailyTravelRate,
+      mealDaily: dailyMealRate,
+      bonusDaily: dailyBonusRate,
     },
 
     deductions: {
       basic: basicDeduction,
-      attendance: attendancePenalty,
+      attendance: 0,
       meal: mealDeduction,
       travel: travelDeduction,
       travelPenalty,
@@ -288,6 +406,13 @@ export function calculateSalary(employee, records, adjustments = {}) {
       epf,
       advance,
       other: otherDeduction,
+    },
+
+    earnedBeforeDeductions: {
+      basic: earnedBasic,
+      travel: travelBeforeDeductions,
+      meal: mealBeforeDeductions,
+      bonus: earnedBonus,
     },
   };
 }
