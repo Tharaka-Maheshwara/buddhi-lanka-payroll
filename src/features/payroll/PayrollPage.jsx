@@ -16,8 +16,13 @@ import { money, duration } from "../../shared/utils/format";
 import { calculateSalary } from "./domain/salary";
 import { DownloadPaysheet } from "./DownloadPaysheet";
 
+const modeLabels = {
+  monthly: "Full month",
+  recorded: "Worked days only",
+};
+
 const earningFields = [
-  ["basic", "Earned basic salary"],
+  ["basic", "Basic after deductions"],
   ["attendance", "Attendance allowance"],
   ["travel", "Travelling allowance"],
   ["meal", "Meal allowance"],
@@ -52,7 +57,21 @@ function AmountRow({
   );
 }
 
-function sourceKey(employee, records) {
+function SummaryCard({ label, value }) {
+  return (
+    <div className="rounded-xl border border-stone-200 p-4">
+      <p className="text-xs text-stone-500">
+        {label}
+      </p>
+
+      <p className="mt-2 font-semibold">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function getSourceKey(employee, records) {
   return JSON.stringify({
     employee: [
       employee.id,
@@ -68,6 +87,7 @@ function sourceKey(employee, records) {
     records: records
       .map((record) => [
         record.id,
+        record.employee,
         record.date,
         record.status,
         record.regular,
@@ -88,17 +108,28 @@ function SalaryModal({
   period,
   onClose,
 }) {
-  const [bonusDeduction, setBonusDeduction] = useState("0");
+  // Full month is selected initially.
+  const [calculationMode, setCalculationMode] =
+    useState("monthly");
+
+  const [bonusDeduction, setBonusDeduction] =
+    useState("0");
+
   const [calculation, setCalculation] = useState(null);
   const [error, setError] = useState("");
 
-  const currentSource = sourceKey(employee, records);
+  const currentSource = getSourceKey(employee, records);
+
+  const currentInput = JSON.stringify({
+    mode: calculationMode,
+    bonusDeduction,
+  });
 
   const needsRecalculation =
     calculation !== null &&
     (
       calculation.source !== currentSource ||
-      calculation.input !== bonusDeduction
+      calculation.input !== currentInput
     );
 
   const result =
@@ -107,19 +138,23 @@ function SalaryModal({
       : null;
 
   const recordedLate = records
-    .filter(
-      (record) =>
-        !["Paid leave", "Sick leave", "No pay"].includes(
-          record.status,
-        ),
+    .filter((record) =>
+      ["Present", "Partial day", "Half day"].includes(
+        record.status,
+      ),
     )
     .reduce(
       (total, record) =>
         total +
-        Number(record.late || 0) +
-        Number(record.leaveDuration || 0),
+        (Number(record.late) || 0) +
+        (Number(record.leaveDuration) || 0),
       0,
     );
+
+  function changeMode(value) {
+    setCalculationMode(value);
+    setError("");
+  }
 
   function changeDeduction(value) {
     setBonusDeduction(value);
@@ -133,38 +168,93 @@ function SalaryModal({
     try {
       if (!records.length) {
         throw new Error(
-          "No attendance records exist for this employee and pay period.",
+          "No attendance records exist for this employee and month.",
         );
       }
 
-      const nextResult = calculateSalary(employee, records, {
-        bonusDeduction,
-        advance: 0,
-        otherDeduction: 0,
-      });
+      const invalidRecord = records.some(
+        (record) =>
+          record.employee !== employee.id ||
+          typeof record.date !== "string" ||
+          !record.date.startsWith(`${period}-`),
+      );
+
+      if (invalidRecord) {
+        throw new Error(
+          "Attendance records must belong to this employee and selected month.",
+        );
+      }
+
+      const nextResult = calculateSalary(
+        employee,
+        records,
+        {
+          mode: calculationMode,
+          bonusDeduction,
+          advance: 0,
+          otherDeduction: 0,
+        },
+      );
+
+      if (
+        nextResult.calculationMode !== calculationMode
+      ) {
+        throw new Error(
+          "Update domain/salary.js with the version supporting Full month and Worked days only.",
+        );
+      }
 
       if (
         !nextResult.epf ||
-        !Number.isFinite(nextResult.deductions.epf) ||
-        !Number.isFinite(nextResult.totalDeductions)
+        !Number.isFinite(nextResult.deductions?.epf) ||
+        !Number.isFinite(nextResult.totalDeductions) ||
+        !Number.isFinite(nextResult.payable)
       ) {
         throw new Error(
-          "Update domain/salary.js with the EPF-enabled calculation.",
+          "The salary calculation returned an invalid result.",
         );
       }
 
       setCalculation({
         result: nextResult,
         source: currentSource,
-        input: bonusDeduction,
+        input: currentInput,
       });
     } catch (failure) {
       setCalculation(null);
+
       setError(
         failure.message || "Unable to calculate salary.",
       );
     }
   }
+
+  const summaryFields = result
+    ? [
+        ["Recorded dates", records.length],
+        ["Worked days", result.counts.attendedDays],
+        ["Holiday work days", result.counts.holidayDays],
+        ["Paid leave days", result.counts.paid],
+        ["Sick leave days", result.counts.sick],
+        ["No-pay days", result.counts.noPay],
+        [
+          "Regular worked time",
+          duration(result.time.regularMinutes),
+        ],
+        [
+          "Total late",
+          duration(result.time.lateMinutes),
+        ],
+        [
+          "OT",
+          duration(result.time.otMinutes),
+        ],
+        [
+          "Double OT",
+          duration(result.time.doubleMinutes),
+        ],
+      ]
+    : [];
 
   return (
     <Modal
@@ -191,51 +281,67 @@ function SalaryModal({
             </h3>
 
             <p className="mt-1 text-sm text-stone-500">
-              {employee.role} · Pay period: {period}
+              {employee.role || "—"} · {period}
             </p>
           </div>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-3">
-          <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
-            <p className="text-sm text-stone-500">
-              Attendance records
-            </p>
+          <SummaryCard
+            label="Attendance records"
+            value={records.length}
+          />
 
-            <p className="mt-2 font-semibold">
-              {records.length}
-            </p>
-          </div>
+          <SummaryCard
+            label="Configured monthly basic"
+            value={money(employee.basic || 0)}
+          />
 
-          <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
-            <p className="text-sm text-stone-500">
-              Monthly production bonus
-            </p>
-
-            <p className="mt-2 font-semibold">
-              {money(employee.bonus || 0)}
-            </p>
-          </div>
-
-          <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
-            <p className="text-sm text-stone-500">
-              Arrival late + personal leave
-            </p>
-
-            <p className="mt-2 font-semibold">
-              {duration(recordedLate)}
-            </p>
-          </div>
+          <SummaryCard
+            label="Total late"
+            value={duration(recordedLate)}
+          />
         </div>
 
-        <form onSubmit={calculate} className="space-y-4">
+        <form
+          onSubmit={calculate}
+          className="space-y-4"
+        >
+          <Field label="Salary calculation">
+            <select
+              required
+              value={calculationMode}
+              onChange={(event) =>
+                changeMode(event.target.value)
+              }
+            >
+              <option value="monthly">
+                Full month
+              </option>
+
+              <option value="recorded">
+                Worked days only
+              </option>
+            </select>
+          </Field>
+
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+            <p className="font-semibold">
+              {modeLabels[calculationMode]}
+            </p>
+
+            <p className="mt-2 leading-relaxed">
+              {calculationMode === "monthly"
+                ? "Uses monthly salary amounts with the relevant leave, late and allowance deductions. Use after completing attendance for the full month."
+                : "Uses saved Regular worked minutes for Basic, and recorded working days for allowances. Late already excluded from Regular minutes is not deducted from Basic again."}
+            </p>
+          </div>
+
           <Field label="Production bonus deduction (LKR)">
             <input
-              autoFocus
               required
               type="number"
               min="0"
-              max={Number(employee.bonus || 0)}
               step="0.01"
               value={bonusDeduction}
               onChange={(event) =>
@@ -244,18 +350,19 @@ function SalaryModal({
             />
           </Field>
 
-          <p className="text-sm text-stone-500">
-            Enter 0 if no production bonus deduction applies.
-            Salary is calculated only when you press Calculate salary.
+          <p className="text-sm leading-relaxed text-stone-500">
+            Enter 0 if no additional manual bonus deduction
+            applies. Automatic bonus late deductions are
+            calculated separately.
           </p>
 
           {error && (
-            <div
+            <p
               role="alert"
               className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800"
             >
               {error}
-            </div>
+            </p>
           )}
 
           <Button
@@ -271,14 +378,14 @@ function SalaryModal({
             role="status"
             className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
           >
-            The deduction or source records have changed. Press
-            Calculate salary again to display the updated total.
+            The calculation method, deduction or attendance
+            has changed. Press Calculate salary again.
           </p>
         )}
 
         {!calculation && !error && (
           <p className="rounded-xl border border-stone-200 p-4 text-sm text-stone-500">
-            The final salary will appear after calculation.
+            Press Calculate salary to display the final amount.
           </p>
         )}
 
@@ -289,14 +396,18 @@ function SalaryModal({
               className="rounded-2xl bg-emerald-900 p-5 text-white"
             >
               <p className="text-sm text-emerald-100">
-                Earned salary after EPF
+                {modeLabels[result.calculationMode]}
+              </p>
+
+              <p className="mt-3 text-sm">
+                Net payable
               </p>
 
               <p className="mt-2 text-3xl font-semibold">
                 {money(result.payable)}
               </p>
 
-              <p className="mt-2 text-xs text-emerald-100">
+              <p className="mt-3 text-xs text-emerald-100">
                 Employee EPF (8%):{" "}
                 {money(result.deductions.epf)}
               </p>
@@ -308,59 +419,25 @@ function SalaryModal({
               </h3>
 
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {[
-                  ["Recorded dates", `${records.length} days`],
-                  ["Paid leave", `${result.counts.paid} days`],
-                  ["Sick leave", `${result.counts.sick} days`],
-                  ["No pay", `${result.counts.noPay} days`],
-                  [
-                    "Regular worked time",
-                    duration(
-                      records.reduce(
-                        (total, record) =>
-                          total + Number(record.regular || 0),
-                        0,
-                      ),
-                    ),
-                  ],
-                  [
-                    "Total late",
-                    duration(result.time.lateMinutes),
-                  ],
-                  [
-                    "Late converted to days",
-                    `${result.counts.lateDays} days`,
-                  ],
-                  [
-                    "Remaining late",
-                    duration(result.time.extraLateMinutes),
-                  ],
-                  ["OT", duration(result.time.otMinutes)],
-                  [
-                    "Double OT",
-                    duration(result.time.doubleMinutes),
-                  ],
-                ].map(([label, value]) => (
-                  <div
+                {summaryFields.map(([label, value]) => (
+                  <SummaryCard
                     key={label}
-                    className="rounded-xl border border-stone-200 p-3"
-                  >
-                    <p className="text-xs text-stone-500">
-                      {label}
-                    </p>
-
-                    <p className="mt-2 text-sm font-semibold">
-                      {value}
-                    </p>
-                  </div>
+                    label={label}
+                    value={value}
+                  />
                 ))}
               </div>
             </section>
 
             <section className="rounded-xl border border-stone-200 p-4">
               <h3 className="mb-3 font-semibold">
-                Calculation breakdown
+                Calculation rates
               </h3>
+
+              <p className="mb-3 text-xs leading-relaxed text-stone-500">
+                Basic uses 25 days. Allowances use 26 days.
+                Full precision is retained during calculation.
+              </p>
 
               <dl>
                 {[
@@ -372,14 +449,83 @@ function SalaryModal({
                     result.rates.double,
                   ],
                   [
+                    "Travel daily rate",
+                    result.rates.travelDaily,
+                  ],
+                  [
+                    "Meal daily rate",
+                    result.rates.mealDaily,
+                  ],
+                  [
+                    "Production bonus daily rate",
+                    result.rates.bonusDaily,
+                  ],
+                ].map(([label, value]) => (
+                  <AmountRow
+                    key={label}
+                    label={label}
+                    value={value}
+                  />
+                ))}
+              </dl>
+            </section>
+
+            <section className="rounded-xl border border-stone-200 p-4">
+              <h3 className="mb-3 font-semibold">
+                Earnings before deductions
+              </h3>
+
+              <dl>
+                {[
+                  [
+                    "Basic calculation base",
+                    result.earnedBeforeDeductions.basic,
+                  ],
+                  [
+                    "Travel calculation base",
+                    result.earnedBeforeDeductions.travel,
+                  ],
+                  [
+                    "Meal calculation base",
+                    result.earnedBeforeDeductions.meal,
+                  ],
+                  [
+                    "Production bonus calculation base",
+                    result.earnedBeforeDeductions.bonus,
+                  ],
+                ].map(([label, value]) => (
+                  <AmountRow
+                    key={label}
+                    label={label}
+                    value={value}
+                  />
+                ))}
+              </dl>
+
+              {result.calculationMode === "recorded" && (
+                <p className="mt-3 text-xs leading-relaxed text-stone-500">
+                  Basic already reflects the saved Regular
+                  worked minutes, including time reductions
+                  applied by the attendance calculator.
+                </p>
+              )}
+            </section>
+
+            <section className="rounded-xl border border-stone-200 p-4">
+              <h3 className="mb-3 font-semibold">
+                Deductions already applied to earnings
+              </h3>
+
+              <dl>
+                {[
+                  [
                     "Basic deduction",
                     result.deductions.basic,
                   ],
                   [
-                    "Attendance penalty",
-                    result.deductions.attendance,
+                    "Meal deduction",
+                    result.deductions.meal,
                   ],
-                  ["Meal deduction", result.deductions.meal],
                   [
                     "Travel standard deduction",
                     result.deductions.travel,
@@ -389,14 +535,19 @@ function SalaryModal({
                     result.deductions.travelPenalty,
                   ],
                   [
-                    "Production bonus deduction",
-                    result.deductions.bonus,
+                    "Production bonus late deduction",
+                    result.deductions.bonusLate,
+                  ],
+                  [
+                    "Manual production bonus deduction",
+                    result.deductions.bonusManual,
                   ],
                 ].map(([label, value]) => (
                   <AmountRow
                     key={label}
                     label={label}
                     value={value}
+                    deduction
                   />
                 ))}
               </dl>
@@ -428,14 +579,16 @@ function SalaryModal({
                   deduction
                 />
 
-                <div className="py-3 text-xs text-stone-500">
-                  EPF base: {money(result.epf.base)}
-                  {" × 8%"}
-                </div>
+                <p className="py-3 text-xs text-stone-500">
+                  EPF base: {money(result.epf.base)} × 8%
+                </p>
 
                 <div className="flex justify-between gap-4 border-t border-stone-200 pt-4 font-semibold text-emerald-900">
                   <dt>Net payable</dt>
-                  <dd>{money(result.payable)}</dd>
+
+                  <dd className="whitespace-nowrap">
+                    {money(result.payable)}
+                  </dd>
                 </div>
               </dl>
             </section>
@@ -445,7 +598,13 @@ function SalaryModal({
                 Employee paysheet
               </h3>
 
+              <p className="mt-2 text-sm text-stone-500">
+                Calculation:{" "}
+                {modeLabels[result.calculationMode]}
+              </p>
+
               <DownloadPaysheet
+                key={`${calculation.source}:${calculation.input}`}
                 employee={employee}
                 period={period}
                 result={result}
@@ -455,8 +614,8 @@ function SalaryModal({
         )}
 
         <p className="text-xs text-stone-500">
-          This calculation and manual deduction are not saved to
-          Firestore. Download the paysheet before closing.
+          This calculation is not saved to Firestore.
+          Download the paysheet before closing.
         </p>
       </div>
 
@@ -493,25 +652,25 @@ export function PayrollPage() {
   const loading = employeesLoading || attendanceLoading;
   const error = employeesError || attendanceError;
 
-  // Only attendance belonging to the selected month.
   const monthlyAttendance = attendance.filter(
     (record) =>
       typeof record.date === "string" &&
       record.date.startsWith(`${period}-`),
   );
 
-  const employeeIdsWithAttendance = new Set(
-    monthlyAttendance.map((record) => record.employee),
+  const recordCounts = new Map();
+
+  for (const record of monthlyAttendance) {
+    recordCounts.set(
+      record.employee,
+      (recordCounts.get(record.employee) || 0) + 1,
+    );
+  }
+
+  const payrollEmployees = employees.filter(
+    (employee) => recordCounts.has(employee.id),
   );
 
-  // Employees disappear from this list when their final attendance
-  // record for the selected month is deleted.
-  const payrollEmployees = employees.filter((employee) =>
-    employeeIdsWithAttendance.has(employee.id),
-  );
-
-  // Use the filtered list so an open modal also closes when the
-  // employee no longer has any attendance in this month.
   const selectedEmployee =
     selection?.period === period
       ? payrollEmployees.find(
@@ -521,12 +680,19 @@ export function PayrollPage() {
 
   const selectedRecords = selectedEmployee
     ? monthlyAttendance.filter(
-        (record) => record.employee === selectedEmployee.id,
+        (record) =>
+          record.employee === selectedEmployee.id,
       )
     : [];
 
   function openCalculation(employee) {
-    if (!employeeIdsWithAttendance.has(employee.id)) return;
+    if (
+      loading ||
+      error ||
+      !recordCounts.has(employee.id)
+    ) {
+      return;
+    }
 
     setSelection({
       id: employee.id,
@@ -553,64 +719,68 @@ export function PayrollPage() {
 
       {!loading && !error && (
         <>
+          <p className="mb-4 text-sm text-stone-500">
+            These are configured monthly salary values.
+            Select Calculate salary to view the amount payable.
+          </p>
+
           <div className="card overflow-x-auto">
-            <table>
+            <table className="w-full">
               <thead>
                 <tr>
                   <th>Employee</th>
                   <th>Role</th>
-                  <th>Basic salary</th>
-                  <th>Attendance</th>
-                  <th>Travel</th>
-                  <th>Meal</th>
-                  <th>Production bonus</th>
+                  <th>Monthly basic</th>
+                  <th>Monthly attendance</th>
+                  <th>Monthly travel</th>
+                  <th>Monthly meal</th>
+                  <th>Monthly bonus</th>
                   <th>Recorded dates</th>
                   <th>Actions</th>
                 </tr>
               </thead>
 
               <tbody>
-                {payrollEmployees.map((employee) => {
-                  const recordCount = monthlyAttendance.filter(
-                    (record) => record.employee === employee.id,
-                  ).length;
+                {payrollEmployees.map((employee) => (
+                  <tr key={employee.id}>
+                    <td className="font-semibold">
+                      {employee.name}
+                    </td>
 
-                  return (
-                    <tr key={employee.id}>
-                      <td className="font-semibold">
-                        {employee.name}
+                    <td>{employee.role || "—"}</td>
+
+                    {[
+                      "basic",
+                      "attendance",
+                      "travel",
+                      "meal",
+                      "bonus",
+                    ].map((key) => (
+                      <td
+                        key={key}
+                        className="whitespace-nowrap"
+                      >
+                        {money(employee[key] || 0)}
                       </td>
+                    ))}
 
-                      <td>{employee.role}</td>
+                    <td>
+                      {recordCounts.get(employee.id) || 0}
+                    </td>
 
-                      {[
-                        "basic",
-                        "attendance",
-                        "travel",
-                        "meal",
-                        "bonus",
-                      ].map((key) => (
-                        <td key={key}>
-                          {money(employee[key] || 0)}
-                        </td>
-                      ))}
-
-                      <td>{recordCount}</td>
-
-                      <td>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            openCalculation(employee)
-                          }
-                          className="whitespace-nowrap font-semibold text-emerald-800 underline"
-                        >
-                          Calculate salary
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openCalculation(employee)
+                        }
+                        className="whitespace-nowrap font-semibold text-emerald-800 underline"
+                      >
+                        Calculate salary
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
 
