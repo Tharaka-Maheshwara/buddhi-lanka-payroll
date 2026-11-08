@@ -77,11 +77,19 @@ export function getPersonalLeaves(record) {
 export function calculateArrivalLate(inTime) {
   const arrival = toMinutes(inTime);
 
-  if (arrival < 8 * 60 + 35) return 0;
-  if (arrival < 8 * 60 + 45) return 15;
-  if (arrival < 9 * 60) return 30;
+  // Up to and including 08:35: no arrival late.
+  if (arrival <= 8 * 60 + 35) return 0;
+
+  // 08:36–08:45: 15 minutes.
+  if (arrival <= 8 * 60 + 45) return 15;
+
+  // 08:46–09:00: 30 minutes.
+  if (arrival <= 9 * 60) return 30;
+
+  // 09:01–09:15: 1 hour.
   if (arrival <= 9 * 60 + 15) return 60;
 
+  // After 09:15: 4 hours.
   return 240;
 }
 
@@ -158,7 +166,9 @@ function getClockDetails(record) {
 
   for (const interval of intervals) {
     if (interval.start < previousEnd) {
-      throw new Error("Personal leave periods must not overlap.");
+      throw new Error(
+        "Personal leave periods must not overlap.",
+      );
     }
 
     leave += interval.end - interval.start;
@@ -168,7 +178,9 @@ function getClockDetails(record) {
   const worked = end - start - leave - breakMinutes;
 
   if (worked < 0) {
-    throw new Error("Personal leave and breaks exceed the shift.");
+    throw new Error(
+      "Personal leave and breaks exceed the shift.",
+    );
   }
 
   return {
@@ -273,14 +285,14 @@ export function calculateAttendance(record) {
       WEEKDAY_END,
     );
 
-    // Lunch is deducted only from Saturday afternoon OT.
-    // Morning and post-17:30 overtime remain unaffected.
+    // Deduct lunch only from Saturday 13:30–17:30 OT.
     saturdayOT = Math.max(
       0,
       afternoonWorked - LUNCH_MINUTES,
     );
   }
 
+  // Morning and post-17:30 OT are added without a lunch deduction.
   const ot =
     morningOT +
     saturdayOT +
