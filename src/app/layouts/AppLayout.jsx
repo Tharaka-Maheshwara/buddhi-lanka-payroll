@@ -60,9 +60,7 @@ export function AppLayout() {
           ))}
         </nav>
 
-        <p className="mt-10 text-xs text-emerald-100/60">
-          Version 0.1 · Development starter
-        </p>
+        
       </aside>
 
       <main className="min-w-0 flex-1 px-5 pb-12 lg:ml-60 lg:px-9">
