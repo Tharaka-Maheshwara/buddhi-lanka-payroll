@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { deleteDoc, doc } from "firebase/firestore";
+
 import { db } from "../../lib/firebase/client";
 import { useRecords } from "../../shared/hooks/useRecords";
 import { usePeriod } from "../../app/PeriodContext";
+
 import {
   PageHeader,
   Button,
@@ -10,8 +12,10 @@ import {
   Stat,
   Message,
 } from "../../shared/ui";
+
 import { Modal } from "../../shared/ui/Modal";
 import { duration } from "../../shared/utils/format";
+
 import {
   calculateAttendance,
   getPersonalLeaves,
@@ -34,30 +38,19 @@ const blank = {
   unpaid: 0,
   ot: 0,
   double: 0,
+  leaveDuration: 0,
 };
 
 const statuses = [
-  "Present",
-  "Paid leave",
-  "Sick leave",
-  "Half day",
-  "No pay",
-  "Holiday work",
+  ["Present", "Present"],
+  ["Paid leave", "Paid leave"],
+  ["Sick leave", "Sick leave"],
+  ["Partial day", "Half day"],
+  ["No pay", "No pay"],
+  ["Holiday work", "Holiday work"],
 ];
 
-const leaveStatuses = [
-  "Paid leave",
-  "Sick leave",
-  "No pay",
-];
-
-const summaryFields = [
-  ["regular", "Regular worked time"],
-  ["late", "Arrival late"],
-  ["leaveDuration", "Personal leave"],
-  ["ot", "OT"],
-  ["double", "Double OT"],
-];
+const leaveStatuses = ["Paid leave", "Sick leave", "No pay"];
 
 const previewFields = [
   ["late", "Arrival late"],
@@ -68,71 +61,68 @@ const previewFields = [
 ];
 
 function getTodayDate() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, "0");
-  const day = String(today.getDate()).padStart(2, "0");
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: "Asia/Colombo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
 
-  return `${year}-${month}-${day}`;
+  const get = (type) =>
+    parts.find((part) => part.type === type).value;
+
+  return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
-function countPaidLeaveDays(
+function countLeaveDays(
   records,
   employeeId,
   date,
   excludedId,
+  status,
+  prefixLength,
 ) {
   if (!employeeId || !date) return 0;
 
-  const month = date.slice(0, 7);
+  const prefix = `${date.slice(0, prefixLength)}-`;
 
-  const dates = new Set(
+  return new Set(
     records
       .filter(
         (record) =>
           record.id !== excludedId &&
           record.employee === employeeId &&
-          record.status === "Paid leave" &&
-          record.date?.startsWith(`${month}-`),
+          record.status === status &&
+          typeof record.date === "string" &&
+          record.date.startsWith(prefix),
       )
       .map((record) => record.date),
-  );
-
-  return dates.size;
+  ).size;
 }
 
-function countSickLeaveDays(
-  records,
-  employeeId,
-  date,
-  excludedId,
-) {
-  if (!employeeId || !date) return 0;
-
-  const year = date.slice(0, 4);
-
-  const dates = new Set(
-    records
-      .filter(
-        (record) =>
-          record.id !== excludedId &&
-          record.employee === employeeId &&
-          record.status === "Sick leave" &&
-          record.date?.startsWith(`${year}-`),
-      )
-      .map((record) => record.date),
+function countPaidLeaveDays(records, employeeId, date, excludedId) {
+  return countLeaveDays(
+    records,
+    employeeId,
+    date,
+    excludedId,
+    "Paid leave",
+    7,
   );
+}
 
-  return dates.size;
+function countSickLeaveDays(records, employeeId, date, excludedId) {
+  return countLeaveDays(
+    records,
+    employeeId,
+    date,
+    excludedId,
+    "Sick leave",
+    4,
+  );
 }
 
 function clearLeaveTimes(record) {
-  let unpaid = 0;
-
-  if (record.status === "No pay") {
-    unpaid = record.unpaid > 0 ? record.unpaid : 480;
-  }
-
   return {
     ...record,
     inTime: "",
@@ -144,7 +134,12 @@ function clearLeaveTimes(record) {
     breakMinutes: 0,
     regular: 0,
     late: 0,
-    unpaid,
+    unpaid:
+      record.status === "No pay"
+        ? record.unpaid > 0
+          ? record.unpaid
+          : 480
+        : 0,
     ot: 0,
     double: 0,
     leaveDuration: 0,
@@ -154,12 +149,12 @@ function clearLeaveTimes(record) {
 function displayWorkDuration(record, key) {
   if (
     record.status === "Holiday work" &&
-    (key === "regular" || key === "ot")
+    ["regular", "ot"].includes(key)
   ) {
     return "—";
   }
 
-  return duration(record[key]);
+  return duration(record[key] || 0);
 }
 
 export function AttendancePage() {
@@ -188,26 +183,59 @@ export function AttendancePage() {
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
 
-  const recordsLoading =
-    attendanceLoading || employeesLoading;
-
+  const recordsLoading = attendanceLoading || employeesLoading;
   const recordsError = error || employeesError;
 
   const rows = records
     .filter(
       (record) =>
-        record.date.startsWith(period) &&
+        typeof record.date === "string" &&
+        record.date.startsWith(`${period}-`) &&
         (!filter || record.employee === filter),
     )
-    .sort((first, second) =>
-      first.date.localeCompare(second.date),
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const totalMinutes = (key) =>
+    rows.reduce(
+      (total, record) => total + Number(record[key] || 0),
+      0,
     );
+
+  // These summary counts use only the selected month and employee.
+  const monthlyPaidLeaveDays = new Set(
+    rows
+      .filter((record) => record.status === "Paid leave")
+      .map((record) => record.date),
+  ).size;
+
+  const monthlySickLeaveDays = new Set(
+    rows
+      .filter((record) => record.status === "Sick leave")
+      .map((record) => record.date),
+  ).size;
+
+  const summaryCards = [
+    ["Regular worked time", duration(totalMinutes("regular"))],
+    ["Arrival late", duration(totalMinutes("late"))],
+    [
+      "Paid leave",
+      `${monthlyPaidLeaveDays} ${
+        monthlyPaidLeaveDays === 1 ? "day" : "days"
+      }`,
+    ],
+    [
+      "Sick leave",
+      `${monthlySickLeaveDays} ${
+        monthlySickLeaveDays === 1 ? "day" : "days"
+      }`,
+    ],
+    ["OT", duration(totalMinutes("ot"))],
+    ["Double OT", duration(totalMinutes("double"))],
+  ];
 
   const hasSelectedEmployee = Boolean(
     entry?.employee &&
-      employees.some(
-        (employee) => employee.id === entry.employee,
-      ),
+      employees.some((employee) => employee.id === entry.employee),
   );
 
   const isLeaveEntry = Boolean(
@@ -228,19 +256,6 @@ export function AttendancePage() {
     entry?.id,
   );
 
-  const paidLeaveUnavailable = paidLeaveUsed >= 2;
-  const sickLeaveUnavailable = sickLeaveUsed >= 7;
-
-  const paidLeaveRemaining = Math.max(
-    0,
-    2 - paidLeaveUsed,
-  );
-
-  const sickLeaveRemaining = Math.max(
-    0,
-    7 - sickLeaveUsed,
-  );
-
   const leaveRecordsReady = Boolean(
     hasSelectedEmployee &&
       entry?.date &&
@@ -249,10 +264,10 @@ export function AttendancePage() {
   );
 
   const canChoosePaidLeave =
-    leaveRecordsReady && !paidLeaveUnavailable;
+    leaveRecordsReady && paidLeaveUsed < 2;
 
   const canChooseSickLeave =
-    leaveRecordsReady && !sickLeaveUnavailable;
+    leaveRecordsReady && sickLeaveUsed < 7;
 
   let calculation = null;
   let calculationError = "";
@@ -261,67 +276,54 @@ export function AttendancePage() {
     entry &&
     hasSelectedEmployee &&
     !isLeaveEntry &&
-    (entry.inTime || entry.outTime)
+    entry.inTime &&
+    entry.outTime
   ) {
     try {
       calculation = calculateAttendance(entry);
-    } catch (error) {
-      calculationError = error.message;
+    } catch (failure) {
+      calculationError = failure.message;
     }
   }
 
   function employeeName(id) {
-    return (
-      employees.find((employee) => employee.id === id)?.name ||
-      id
-    );
+    return employees.find((employee) => employee.id === id)?.name || id;
   }
 
   function update(key, value) {
-    if (busy) return;
-
-    if (key !== "employee" && !hasSelectedEmployee) {
-      return;
-    }
+    if (busy || !entry) return;
+    if (key !== "employee" && !hasSelectedEmployee) return;
 
     setFormError("");
 
     setEntry((previous) => {
-      const nextEntry = {
-        ...previous,
-        [key]: value,
-      };
+      const next = { ...previous, [key]: value };
 
       if (key !== "employee" && key !== "date") {
-        return nextEntry;
+        return next;
       }
 
-      const paidLimitReached =
-        nextEntry.status === "Paid leave" &&
+      const paidLimit =
+        next.status === "Paid leave" &&
         countPaidLeaveDays(
           records,
-          nextEntry.employee,
-          nextEntry.date,
-          nextEntry.id,
+          next.employee,
+          next.date,
+          next.id,
         ) >= 2;
 
-      const sickLimitReached =
-        nextEntry.status === "Sick leave" &&
+      const sickLimit =
+        next.status === "Sick leave" &&
         countSickLeaveDays(
           records,
-          nextEntry.employee,
-          nextEntry.date,
-          nextEntry.id,
+          next.employee,
+          next.date,
+          next.id,
         ) >= 7;
 
-      if (paidLimitReached || sickLimitReached) {
-        return {
-          ...nextEntry,
-          status: "Present",
-        };
-      }
-
-      return nextEntry;
+      return paidLimit || sickLimit
+        ? { ...next, status: "Present" }
+        : next;
     });
   }
 
@@ -339,10 +341,14 @@ export function AttendancePage() {
     setMessage("");
     setFormError("");
 
-    const nextEntry = record
+    const next = record
       ? {
           ...blank,
           ...record,
+          status:
+            record.status === "Half day"
+              ? "Partial day"
+              : record.status,
           personalLeaves: getPersonalLeaves(record).map(
             (leave) => ({ ...leave }),
           ),
@@ -355,9 +361,9 @@ export function AttendancePage() {
         };
 
     setEntry(
-      leaveStatuses.includes(nextEntry.status)
-        ? clearLeaveTimes(nextEntry)
-        : nextEntry,
+      leaveStatuses.includes(next.status)
+        ? clearLeaveTimes(next)
+        : next,
     );
   }
 
@@ -371,25 +377,19 @@ export function AttendancePage() {
   function changeStatus(status) {
     if (!hasSelectedEmployee || busy) return;
 
-    if (
-      status === "Paid leave" &&
-      !canChoosePaidLeave
-    ) {
+    if (status === "Paid leave" && !canChoosePaidLeave) {
       setFormError(
-        paidLeaveUnavailable
-          ? "This employee has already used the 2 paid leave days allowed for this month."
+        paidLeaveUsed >= 2
+          ? "The monthly limit of 2 paid leave days has been reached."
           : "Select a date and wait for attendance records to load.",
       );
       return;
     }
 
-    if (
-      status === "Sick leave" &&
-      !canChooseSickLeave
-    ) {
+    if (status === "Sick leave" && !canChooseSickLeave) {
       setFormError(
-        sickLeaveUnavailable
-          ? "This employee has already used the 7 sick leave days allowed for this year."
+        sickLeaveUsed >= 7
+          ? "The yearly limit of 7 sick leave days has been reached."
           : "Select a date and wait for attendance records to load.",
       );
       return;
@@ -398,33 +398,26 @@ export function AttendancePage() {
     setFormError("");
 
     setEntry((previous) => {
-      if (previous.status === status) {
-        return previous;
-      }
+      if (previous.status === status) return previous;
 
-      const nextEntry = {
-        ...previous,
-        status,
-      };
+      const next = { ...previous, status };
 
-      if (leaveStatuses.includes(status)) {
-        return clearLeaveTimes({
-          ...nextEntry,
-          unpaid: status === "No pay" ? 480 : 0,
-        });
-      }
-
-      return nextEntry;
+      return leaveStatuses.includes(status)
+        ? clearLeaveTimes({
+            ...next,
+            unpaid: status === "No pay" ? 480 : 0,
+          })
+        : next;
     });
   }
 
   function addPersonalLeave() {
     if (!hasSelectedEmployee || busy) return;
 
+    setFormError("");
+
     setEntry((previous) => {
-      if (previous.personalLeaves.length >= 20) {
-        return previous;
-      }
+      if (previous.personalLeaves.length >= 20) return previous;
 
       return {
         ...previous,
@@ -439,6 +432,8 @@ export function AttendancePage() {
   function updatePersonalLeave(index, key, value) {
     if (!hasSelectedEmployee || busy) return;
 
+    setFormError("");
+
     setEntry((previous) => ({
       ...previous,
       personalLeaves: previous.personalLeaves.map(
@@ -452,6 +447,8 @@ export function AttendancePage() {
 
   function removePersonalLeave(index) {
     if (!hasSelectedEmployee || busy) return;
+
+    setFormError("");
 
     setEntry((previous) => ({
       ...previous,
@@ -477,19 +474,17 @@ export function AttendancePage() {
       }
 
       if (!hasSelectedEmployee || !entry.date) {
-        throw new Error(
-          "Select a valid employee and date.",
-        );
+        throw new Error("Select a valid employee and date.");
       }
 
-      const duplicate = records.some(
-        (record) =>
-          record.id !== entry.id &&
-          record.employee === entry.employee &&
-          record.date === entry.date,
-      );
-
-      if (duplicate) {
+      if (
+        records.some(
+          (record) =>
+            record.id !== entry.id &&
+            record.employee === entry.employee &&
+            record.date === entry.date,
+        )
+      ) {
         throw new Error(
           "An entry already exists for this employee and date.",
         );
@@ -505,7 +500,7 @@ export function AttendancePage() {
         ) >= 2
       ) {
         throw new Error(
-          "This employee has already used the 2 paid leave days allowed for this month. Select another attendance type.",
+          "The monthly limit of 2 paid leave days has been reached.",
         );
       }
 
@@ -519,7 +514,7 @@ export function AttendancePage() {
         ) >= 7
       ) {
         throw new Error(
-          "This employee has already used the 7 sick leave days allowed for this year. Select another attendance type.",
+          "The yearly limit of 7 sick leave days has been reached.",
         );
       }
 
@@ -540,25 +535,24 @@ export function AttendancePage() {
       }
 
       validateDurations(savingEntry);
-
       await saveRecord(savingEntry);
 
       setEntry(null);
 
       setMessage(
-        savingEntry.date.startsWith(period)
+        savingEntry.date.startsWith(`${period}-`)
           ? "Attendance saved."
           : `Attendance saved for ${savingEntry.date}. Select that pay period to view it.`,
       );
-    } catch (error) {
-      setFormError(error.message);
+    } catch (failure) {
+      setFormError(failure.message || "Unable to save attendance.");
     } finally {
       setBusy(false);
     }
   }
 
   function openDelete(record) {
-    if (busy || deleting || entry) return;
+    if (busy || deleting || entry || recordsError) return;
 
     setMessage("");
     setDeleteError("");
@@ -580,28 +574,22 @@ export function AttendancePage() {
 
     try {
       if (!db) {
-        throw new Error(
-          "Firebase is not connected.",
-        );
+        throw new Error("Firebase is not connected.");
       }
 
       if (!deleteEntry.id) {
-        throw new Error(
-          "Attendance entry ID is missing.",
-        );
+        throw new Error("Attendance entry ID is missing.");
       }
 
-      await deleteDoc(
-        doc(db, "attendance", deleteEntry.id),
-      );
+      await deleteDoc(doc(db, "attendance", deleteEntry.id));
 
       setDeleteEntry(null);
       setMessage("Attendance entry deleted.");
-    } catch (error) {
+    } catch (failure) {
       setDeleteError(
-        error.code === "permission-denied"
+        failure.code === "permission-denied"
           ? "Delete permission denied. Check your published rules."
-          : error.message || "Unable to delete attendance.",
+          : failure.message || "Unable to delete attendance.",
       );
     } finally {
       setDeleting(false);
@@ -615,6 +603,7 @@ export function AttendancePage() {
         description="Arrival, personal leave, departure and calculated working time."
         action={
           <Button
+            type="button"
             disabled={
               !employees.length ||
               recordsLoading ||
@@ -630,26 +619,19 @@ export function AttendancePage() {
       />
 
       {(recordsError || message) && (
-        <Message>
-          {recordsError || message}
-        </Message>
+        <Message>{recordsError || message}</Message>
       )}
 
       <Field label="Employee">
         <select
           className="max-w-xs"
           value={filter}
-          onChange={(event) =>
-            setFilter(event.target.value)
-          }
+          onChange={(event) => setFilter(event.target.value)}
         >
           <option value="">All employees</option>
 
           {employees.map((employee) => (
-            <option
-              key={employee.id}
-              value={employee.id}
-            >
+            <option key={employee.id} value={employee.id}>
               {employee.name}
             </option>
           ))}
@@ -657,27 +639,15 @@ export function AttendancePage() {
       </Field>
 
       {filter && (
-        <div className="my-6 grid grid-cols-2 gap-4 xl:grid-cols-5">
-          {summaryFields.map(([key, label]) => (
-            <Stat
-              key={key}
-              label={label}
-              value={duration(
-                rows.reduce(
-                  (total, record) =>
-                    total + (record[key] || 0),
-                  0,
-                ),
-              )}
-            />
+        <div className="my-6 grid grid-cols-2 gap-4 xl:grid-cols-6">
+          {summaryCards.map(([label, value]) => (
+            <Stat key={label} label={label} value={value} />
           ))}
         </div>
       )}
 
       <div
-        className={`card overflow-x-auto ${
-          filter ? "" : "mt-6"
-        }`}
+        className={`card overflow-x-auto ${filter ? "" : "mt-6"}`}
       >
         <table className="w-full">
           <thead>
@@ -686,11 +656,9 @@ export function AttendancePage() {
               <th rowSpan={2}>Employee</th>
               <th rowSpan={2}>In time</th>
               <th rowSpan={2}>Late time</th>
-
               <th colSpan={2} className="text-center">
                 Personal leave
               </th>
-
               <th rowSpan={2}>Late time</th>
               <th rowSpan={2}>Out time</th>
               <th rowSpan={2}>Regular worked time</th>
@@ -708,8 +676,7 @@ export function AttendancePage() {
 
           <tbody>
             {rows.map((record) => {
-              const personalLeaves =
-                getPersonalLeaves(record);
+              const leaves = getPersonalLeaves(record);
 
               return (
                 <tr key={record.id}>
@@ -717,56 +684,34 @@ export function AttendancePage() {
                     {record.date}
                   </td>
 
-                  <td>
-                    {employeeName(record.employee)}
-                  </td>
-
+                  <td>{employeeName(record.employee)}</td>
                   <td>{record.inTime || "—"}</td>
 
                   <td className="whitespace-nowrap">
-                    {duration(record.late)}
+                    {duration(record.late || 0)}
                   </td>
 
-                  <td>
-                    {personalLeaves.length ? (
-                      <div className="space-y-2">
-                        {personalLeaves.map(
-                          (leave, index) => (
+                  {["out", "in"].map((key) => (
+                    <td key={key}>
+                      {leaves.length ? (
+                        <div className="space-y-2">
+                          {leaves.map((leave, index) => (
                             <div
                               key={index}
                               className="whitespace-nowrap"
                             >
-                              {leave.out || "—"}
+                              {leave[key] || "—"}
                             </div>
-                          ),
-                        )}
-                      </div>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-
-                  <td>
-                    {personalLeaves.length ? (
-                      <div className="space-y-2">
-                        {personalLeaves.map(
-                          (leave, index) => (
-                            <div
-                              key={index}
-                              className="whitespace-nowrap"
-                            >
-                              {leave.in || "—"}
-                            </div>
-                          ),
-                        )}
-                      </div>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
+                          ))}
+                        </div>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  ))}
 
                   <td className="whitespace-nowrap">
-                    {duration(record.leaveDuration)}
+                    {duration(record.leaveDuration || 0)}
                   </td>
 
                   <td className="whitespace-nowrap">
@@ -774,18 +719,17 @@ export function AttendancePage() {
                     {record.overnight && " (+1)"}
                   </td>
 
-                  {["regular", "ot", "double"].map(
-                    (key) => (
-                      <td
-                        key={key}
-                        className="whitespace-nowrap"
-                      >
-                        {displayWorkDuration(record, key)}
-                      </td>
-                    ),
-                  )}
+                  {["regular", "ot", "double"].map((key) => (
+                    <td key={key} className="whitespace-nowrap">
+                      {displayWorkDuration(record, key)}
+                    </td>
+                  ))}
 
-                  <td>{record.status}</td>
+                  <td>
+                    {record.status === "Partial day"
+                      ? "Half day"
+                      : record.status}
+                  </td>
 
                   <td>
                     <div className="flex gap-4 whitespace-nowrap">
@@ -805,7 +749,9 @@ export function AttendancePage() {
 
                       <button
                         type="button"
-                        disabled={busy || deleting}
+                        disabled={
+                          busy || deleting || Boolean(recordsError)
+                        }
                         className="font-medium text-red-600 underline disabled:opacity-50"
                         onClick={() => openDelete(record)}
                       >
@@ -820,13 +766,9 @@ export function AttendancePage() {
         </table>
 
         {recordsLoading ? (
-          <p className="py-8">
-            Loading attendance…
-          </p>
+          <p className="py-8">Loading attendance…</p>
         ) : !rows.length ? (
-          <p className="py-8">
-            No attendance for this selection.
-          </p>
+          <p className="py-8">No attendance for this selection.</p>
         ) : null}
       </div>
 
@@ -866,10 +808,7 @@ export function AttendancePage() {
                       required
                       value={entry.employee}
                       onChange={(event) =>
-                        update(
-                          "employee",
-                          event.target.value,
-                        )
+                        update("employee", event.target.value)
                       }
                     >
                       <option value="" disabled>
@@ -894,97 +833,92 @@ export function AttendancePage() {
                       type="date"
                       value={entry.date}
                       onChange={(event) =>
-                        update(
-                          "date",
-                          event.target.value,
-                        )
+                        update("date", event.target.value)
                       }
                     />
                   </Field>
 
-                  <Field label="Attendance type">
-                    <select
-                      disabled={!hasSelectedEmployee}
-                      value={entry.status}
-                      onChange={(event) =>
-                        changeStatus(event.target.value)
-                      }
-                    >
-                      {statuses.map((status) => {
-                        let disabled = false;
-                        let label = status;
-
-                        if (status === "Paid leave") {
-                          disabled = !canChoosePaidLeave;
-
-                          if (paidLeaveUnavailable) {
-                            label =
-                              "Paid leave — monthly limit reached";
-                          }
+                  <div>
+                    <Field label="Attendance type">
+                      <select
+                        disabled={!hasSelectedEmployee}
+                        value={entry.status}
+                        onChange={(event) =>
+                          changeStatus(event.target.value)
                         }
+                      >
+                        {statuses.map(([status, label]) => {
+                          const unavailable =
+                            status === "Paid leave"
+                              ? !canChoosePaidLeave
+                              : status === "Sick leave"
+                                ? !canChooseSickLeave
+                                : false;
 
-                        if (status === "Sick leave") {
-                          disabled = !canChooseSickLeave;
+                          const limitLabel =
+                            status === "Paid leave" &&
+                            paidLeaveUsed >= 2
+                              ? " — monthly limit reached"
+                              : status === "Sick leave" &&
+                                  sickLeaveUsed >= 7
+                                ? " — yearly limit reached"
+                                : "";
 
-                          if (sickLeaveUnavailable) {
-                            label =
-                              "Sick leave — yearly limit reached";
-                          }
-                        }
-
-                        return (
-                          <option
-                            key={status}
-                            value={status}
-                            disabled={disabled}
-                          >
-                            {label}
-                          </option>
-                        );
-                      })}
-                    </select>
+                          return (
+                            <option
+                              key={status}
+                              value={status}
+                              disabled={unavailable}
+                            >
+                              {label}
+                              {limitLabel}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </Field>
 
                     {leaveRecordsReady && (
                       <div className="mt-2 space-y-1 text-xs">
                         <p
                           className={
-                            paidLeaveUnavailable
+                            paidLeaveUsed >= 2
                               ? "text-red-600"
                               : "text-stone-600"
                           }
                         >
                           Paid leave available for{" "}
                           {entry.date.slice(0, 7)}:{" "}
-                          {paidLeaveRemaining} / 2
+                          {Math.max(0, 2 - paidLeaveUsed)} / 2
                         </p>
 
                         <p
                           className={
-                            sickLeaveUnavailable
+                            sickLeaveUsed >= 7
                               ? "text-red-600"
                               : "text-stone-600"
                           }
                         >
                           Sick leave available for{" "}
                           {entry.date.slice(0, 4)}:{" "}
-                          {sickLeaveRemaining} / 7
+                          {Math.max(0, 7 - sickLeaveUsed)} / 7
                         </p>
 
                         {entry.id && (
                           <p className="text-stone-500">
-                            Available balances exclude
-                            the entry being edited.
+                            Available balances exclude the entry
+                            being edited.
                           </p>
                         )}
                       </div>
                     )}
-                  </Field>
+                  </div>
                 </div>
 
                 {!hasSelectedEmployee && (
                   <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                    Select an employee first to enter
-                    attendance details.
+                    Select an employee first to enter attendance
+                    details.
                   </p>
                 )}
 
@@ -1017,10 +951,7 @@ export function AttendancePage() {
                       type="time"
                       value={entry.inTime}
                       onChange={(event) =>
-                        update(
-                          "inTime",
-                          event.target.value,
-                        )
+                        update("inTime", event.target.value)
                       }
                     />
                   </Field>
@@ -1047,68 +978,65 @@ export function AttendancePage() {
 
                     {!entry.personalLeaves.length && (
                       <p className="text-sm text-stone-500">
-                        Add each time the employee
-                        leaves and returns.
+                        Add each time the employee leaves and returns.
                       </p>
                     )}
 
                     <div className="space-y-4">
-                      {entry.personalLeaves.map(
-                        (leave, index) => (
-                          <div
-                            key={index}
-                            className="rounded-lg border border-stone-200 bg-stone-50 p-4"
-                          >
-                            <div className="mb-3 flex items-center justify-between gap-3">
-                              <p className="text-sm font-semibold">
-                                Leave period {index + 1}
-                              </p>
+                      {entry.personalLeaves.map((leave, index) => (
+                        <div
+                          key={index}
+                          className="rounded-lg border border-stone-200 bg-stone-50 p-4"
+                        >
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <p className="text-sm font-semibold">
+                              Leave period {index + 1}
+                            </p>
 
-                              <button
-                                type="button"
-                                className="text-sm font-medium text-red-600 underline"
-                                onClick={() =>
-                                  removePersonalLeave(index)
-                                }
-                              >
-                                Remove
-                              </button>
-                            </div>
-
-                            <div className="grid gap-4 sm:grid-cols-2">
-                              <Field label="Personal leave out">
-                                <input
-                                  required
-                                  type="time"
-                                  value={leave.out}
-                                  onChange={(event) =>
-                                    updatePersonalLeave(
-                                      index,
-                                      "out",
-                                      event.target.value,
-                                    )
-                                  }
-                                />
-                              </Field>
-
-                              <Field label="Personal leave in">
-                                <input
-                                  required
-                                  type="time"
-                                  value={leave.in}
-                                  onChange={(event) =>
-                                    updatePersonalLeave(
-                                      index,
-                                      "in",
-                                      event.target.value,
-                                    )
-                                  }
-                                />
-                              </Field>
-                            </div>
+                            <button
+                              type="button"
+                              className="text-sm font-medium text-red-600 underline"
+                              onClick={() =>
+                                removePersonalLeave(index)
+                              }
+                            >
+                              Remove
+                            </button>
                           </div>
-                        ),
-                      )}
+
+                          <div className="grid gap-4 sm:grid-cols-2">
+                            <Field label="Personal leave out">
+                              <input
+                                required
+                                type="time"
+                                value={leave.out}
+                                onChange={(event) =>
+                                  updatePersonalLeave(
+                                    index,
+                                    "out",
+                                    event.target.value,
+                                  )
+                                }
+                              />
+                            </Field>
+
+                            <Field label="Personal leave in">
+                              <input
+                                required
+                                type="time"
+                                value={leave.in}
+                                onChange={(event) =>
+                                  updatePersonalLeave(
+                                    index,
+                                    "in",
+                                    event.target.value,
+                                  )
+                                }
+                              />
+                            </Field>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
 
@@ -1118,10 +1046,7 @@ export function AttendancePage() {
                       type="time"
                       value={entry.outTime}
                       onChange={(event) =>
-                        update(
-                          "outTime",
-                          event.target.value,
-                        )
+                        update("outTime", event.target.value)
                       }
                     />
                   </Field>
@@ -1140,9 +1065,7 @@ export function AttendancePage() {
                       <dl className="grid gap-4 sm:grid-cols-2">
                         {previewFields.map(([key, label]) => (
                           <div key={key}>
-                            <dt className="text-xs">
-                              {label}
-                            </dt>
+                            <dt className="text-xs">{label}</dt>
 
                             <dd className="mt-1 font-semibold">
                               {displayWorkDuration(
@@ -1158,8 +1081,8 @@ export function AttendancePage() {
                       </dl>
                     ) : (
                       <p>
-                        Enter In and Out times to
-                        calculate working time.
+                        Enter In and Out times to calculate working
+                        time.
                       </p>
                     )}
                   </div>
@@ -1225,9 +1148,8 @@ export function AttendancePage() {
             </div>
 
             <p className="text-sm text-stone-600">
-              This permanently deletes the attendance
-              entry. Recalculate saved payroll drafts
-              affected by this change.
+              This permanently deletes the attendance entry.
+              Recalculate any salary affected by this change.
             </p>
           </div>
 
