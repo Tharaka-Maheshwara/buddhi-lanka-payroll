@@ -16,11 +16,6 @@ import { money, duration } from "../../shared/utils/format";
 import { calculateSalary } from "./domain/salary";
 import { DownloadPaysheet } from "./DownloadPaysheet";
 
-const modeLabels = {
-  monthly: "Full month",
-  recorded: "Worked days only",
-};
-
 const earningFields = [
   ["basic", "Basic after deductions"],
   ["attendance", "Attendance allowance"],
@@ -108,10 +103,6 @@ function SalaryModal({
   period,
   onClose,
 }) {
-  // Full month is selected initially.
-  const [calculationMode, setCalculationMode] =
-    useState("monthly");
-
   const [bonusDeduction, setBonusDeduction] =
     useState("0");
 
@@ -121,7 +112,6 @@ function SalaryModal({
   const currentSource = getSourceKey(employee, records);
 
   const currentInput = JSON.stringify({
-    mode: calculationMode,
     bonusDeduction,
   });
 
@@ -150,11 +140,6 @@ function SalaryModal({
         (Number(record.leaveDuration) || 0),
       0,
     );
-
-  function changeMode(value) {
-    setCalculationMode(value);
-    setError("");
-  }
 
   function changeDeduction(value) {
     setBonusDeduction(value);
@@ -189,7 +174,6 @@ function SalaryModal({
         employee,
         records,
         {
-          mode: calculationMode,
           bonusDeduction,
           advance: 0,
           otherDeduction: 0,
@@ -197,10 +181,10 @@ function SalaryModal({
       );
 
       if (
-        nextResult.calculationMode !== calculationMode
+        nextResult.calculationMode !== "attendance-based"
       ) {
         throw new Error(
-          "Update domain/salary.js with the version supporting Full month and Worked days only.",
+          "Update domain/salary.js with the attendance-based salary calculation.",
         );
       }
 
@@ -244,6 +228,10 @@ function SalaryModal({
         [
           "Total late",
           duration(result.time.lateMinutes),
+        ],
+        [
+          "Other missing regular time",
+          duration(result.time.otherMissingRegularMinutes),
         ],
         [
           "OT",
@@ -307,36 +295,6 @@ function SalaryModal({
           onSubmit={calculate}
           className="space-y-4"
         >
-          <Field label="Salary calculation">
-            <select
-              required
-              value={calculationMode}
-              onChange={(event) =>
-                changeMode(event.target.value)
-              }
-            >
-              <option value="monthly">
-                Full month
-              </option>
-
-              <option value="recorded">
-                Worked days only
-              </option>
-            </select>
-          </Field>
-
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
-            <p className="font-semibold">
-              {modeLabels[calculationMode]}
-            </p>
-
-            <p className="mt-2 leading-relaxed">
-              {calculationMode === "monthly"
-                ? "Uses monthly salary amounts with the relevant leave, late and allowance deductions. Use after completing attendance for the full month."
-                : "Uses saved Regular worked minutes for Basic, and recorded working days for allowances. Late already excluded from Regular minutes is not deducted from Basic again."}
-            </p>
-          </div>
-
           <Field label="Production bonus deduction (LKR)">
             <input
               required
@@ -378,7 +336,7 @@ function SalaryModal({
             role="status"
             className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
           >
-            The calculation method, deduction or attendance
+            The deduction, employee details or attendance
             has changed. Press Calculate salary again.
           </p>
         )}
@@ -396,7 +354,7 @@ function SalaryModal({
               className="rounded-2xl bg-emerald-900 p-5 text-white"
             >
               <p className="text-sm text-emerald-100">
-                {modeLabels[result.calculationMode]}
+                Salary for recorded attendance
               </p>
 
               <p className="mt-3 text-sm">
@@ -431,12 +389,44 @@ function SalaryModal({
 
             <section className="rounded-xl border border-stone-200 p-4">
               <h3 className="mb-3 font-semibold">
+                Salary calculation basis
+              </h3>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <SummaryCard
+                  label="Covered days"
+                  value={result.counts.coveredDays}
+                />
+
+                <SummaryCard
+                  label="Basic base days / 25"
+                  value={result.counts.basicBaseDays}
+                />
+
+                <SummaryCard
+                  label="Allowance base days / 26"
+                  value={result.counts.allowanceBaseDays}
+                />
+              </div>
+
+              <p className="mt-4 text-xs leading-relaxed text-stone-500">
+                A completed Saturday regular shift earns a
+                full Basic day. Late and other missing
+                scheduled Regular time are deducted once.
+                Unrecorded dates are not automatically No pay.
+              </p>
+            </section>
+
+            <section className="rounded-xl border border-stone-200 p-4">
+              <h3 className="mb-3 font-semibold">
                 Calculation rates
               </h3>
 
               <p className="mb-3 text-xs leading-relaxed text-stone-500">
                 Basic uses 25 days. Allowances use 26 days.
-                Full precision is retained during calculation.
+                Calculations retain full precision through
+                the final minute. Displayed amounts use two
+                decimal places.
               </p>
 
               <dl>
@@ -501,14 +491,6 @@ function SalaryModal({
                   />
                 ))}
               </dl>
-
-              {result.calculationMode === "recorded" && (
-                <p className="mt-3 text-xs leading-relaxed text-stone-500">
-                  Basic already reflects the saved Regular
-                  worked minutes, including time reductions
-                  applied by the attendance calculator.
-                </p>
-              )}
             </section>
 
             <section className="rounded-xl border border-stone-200 p-4">
@@ -551,6 +533,11 @@ function SalaryModal({
                   />
                 ))}
               </dl>
+
+              <p className="mt-3 text-xs text-stone-500">
+                These deductions are already included in
+                the salary components below.
+              </p>
             </section>
 
             <section className="rounded-xl border border-stone-200 p-4">
@@ -597,11 +584,6 @@ function SalaryModal({
               <h3 className="font-semibold">
                 Employee paysheet
               </h3>
-
-              <p className="mt-2 text-sm text-stone-500">
-                Calculation:{" "}
-                {modeLabels[result.calculationMode]}
-              </p>
 
               <DownloadPaysheet
                 key={`${calculation.source}:${calculation.input}`}
@@ -721,7 +703,8 @@ export function PayrollPage() {
         <>
           <p className="mb-4 text-sm text-stone-500">
             These are configured monthly salary values.
-            Select Calculate salary to view the amount payable.
+            Select Calculate salary to view the amount
+            payable for recorded attendance.
           </p>
 
           <div className="card overflow-x-auto">

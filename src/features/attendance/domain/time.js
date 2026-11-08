@@ -2,10 +2,10 @@ const SHIFT_START = 8 * 60 + 30;
 const WEEKDAY_END = 17 * 60 + 30;
 const SATURDAY_REGULAR_END = 13 * 60 + 30;
 
-// Morning tea 15 + lunch 30 + evening tea 15.
-const DAILY_BREAK_MINUTES = 60;
+// Saturday's break deduction applies only within 13:30–17:30.
+const SATURDAY_OT_BREAK_MINUTES = 60;
 
-// Applied only to the arrival penalty after 09:15.
+// Used only in the arrival penalty after 09:15.
 const MORNING_TEA_CREDIT = 15;
 
 function toMinutes(value) {
@@ -58,6 +58,9 @@ function getSchedule(date) {
     regularEnd: saturday
       ? SATURDAY_REGULAR_END
       : WEEKDAY_END,
+
+    // Weekdays already allow for the standard break hour.
+    // Saturday's break is deducted from afternoon OT instead.
     regularMinutes: saturday ? 300 : 480,
   };
 }
@@ -82,21 +85,19 @@ export function getPersonalLeaves(record) {
 export function calculateArrivalLate(inTime) {
   const arrival = toMinutes(inTime);
 
-  // Up to and including 08:35: no arrival late.
+  // Up to and including 08:35.
   if (arrival <= 8 * 60 + 35) return 0;
 
-  // After 08:35, up to and including 08:45.
+  // 08:36–08:45.
   if (arrival <= 8 * 60 + 45) return 15;
 
-  // After 08:45, up to and including 09:00.
+  // 08:46–09:00.
   if (arrival <= 9 * 60) return 30;
 
-  // After 09:00, up to and including 09:15.
+  // 09:01–09:15.
   if (arrival <= 9 * 60 + 15) return 60;
 
-  // After 09:15:
-  // Four-hour penalty minus the morning tea credit.
-  // 240 - 15 = 225 minutes (3h 45min).
+  // After 09:15: four hours minus the 15-minute tea credit.
   return 4 * 60 - MORNING_TEA_CREDIT;
 }
 
@@ -108,13 +109,17 @@ function getClockDetails(record) {
     breakMinutes = 0,
   } = record;
 
+  if (typeof overnight !== "boolean") {
+    throw new Error("The overnight setting must be true or false.");
+  }
+
   if (
     !Number.isInteger(breakMinutes) ||
     breakMinutes < 0 ||
     breakMinutes > 1440
   ) {
     throw new Error(
-      "Breaks must be whole minutes between 0 and 1440.",
+      "Additional breaks must be whole minutes between 0 and 1440.",
     );
   }
 
@@ -186,7 +191,7 @@ function getClockDetails(record) {
 
   if (worked < 0) {
     throw new Error(
-      "Personal leave and breaks exceed the shift.",
+      "Personal leave and additional breaks exceed the shift.",
     );
   }
 
@@ -196,6 +201,7 @@ function getClockDetails(record) {
     intervals,
     leave,
     worked,
+    breakMinutes,
   };
 }
 
@@ -225,14 +231,32 @@ function workedWithin(details, rangeStart, rangeEnd) {
 export function calculateClock(record) {
   const { leave, worked } = getClockDetails(record);
 
+  // Raw clock duration, before schedule-based break deductions
+  // and arrival penalties.
   return { leave, worked };
 }
 
 export function calculateAttendance(record) {
   const schedule = getSchedule(record.date);
+
+  // Leave records do not require clock times.
+  if (
+    ["Paid leave", "Sick leave", "No pay"].includes(
+      record.status,
+    )
+  ) {
+    return {
+      late: 0,
+      leaveDuration: 0,
+      regular: 0,
+      ot: 0,
+      double: 0,
+    };
+  }
+
   const details = getClockDetails(record);
 
-  // The 15-minute tea credit is already included here.
+  // The morning tea credit is already included in this value.
   const late = calculateArrivalLate(record.inTime);
 
   const regularLeave = details.intervals.reduce(
@@ -268,7 +292,7 @@ export function calculateAttendance(record) {
           late -
           regularLeave -
           earlyDeparture -
-          (record.breakMinutes || 0),
+          details.breakMinutes,
       )
     : 0;
 
@@ -278,13 +302,13 @@ export function calculateAttendance(record) {
     SHIFT_START,
   );
 
-  const afterStandardHoursOT = workedWithin(
+  const eveningOT = workedWithin(
     details,
     WEEKDAY_END,
     2880,
   );
 
-  let saturdayOT = 0;
+  let saturdayAfternoonOT = 0;
 
   if (schedule.saturday) {
     const afternoonWorked = workedWithin(
@@ -293,19 +317,18 @@ export function calculateAttendance(record) {
       WEEKDAY_END,
     );
 
-    // Keep the confirmed Saturday rule:
-    // deduct the daily break hour from 13:30–17:30 OT only.
-    saturdayOT = Math.max(
+    // The break hour is deducted exclusively from this window.
+    // It never reduces morning OT, evening OT or Regular time.
+    saturdayAfternoonOT = Math.max(
       0,
-      afternoonWorked - DAILY_BREAK_MINUTES,
+      afternoonWorked - SATURDAY_OT_BREAK_MINUTES,
     );
   }
 
-  // Morning and post-17:30 OT have no additional break deduction.
   const ot =
     morningOT +
-    saturdayOT +
-    afterStandardHoursOT;
+    saturdayAfternoonOT +
+    eveningOT;
 
   if (record.status === "Holiday work") {
     return {
@@ -343,6 +366,19 @@ export function validateDurations(record) {
         "Use whole minutes between 0 and 1440.",
       );
     }
+  }
+
+  if (
+    record.leaveDuration !== undefined &&
+    (
+      !Number.isInteger(record.leaveDuration) ||
+      record.leaveDuration < 0 ||
+      record.leaveDuration > 1440
+    )
+  ) {
+    throw new Error(
+      "Personal leave must be whole minutes between 0 and 1440.",
+    );
   }
 
   if (record.regular + record.ot + record.double > 1440) {
