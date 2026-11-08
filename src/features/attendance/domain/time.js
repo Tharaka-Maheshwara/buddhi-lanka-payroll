@@ -1,7 +1,12 @@
 const SHIFT_START = 8 * 60 + 30;
 const WEEKDAY_END = 17 * 60 + 30;
 const SATURDAY_REGULAR_END = 13 * 60 + 30;
-const LUNCH_MINUTES = 60;
+
+// Morning tea 15 + lunch 30 + evening tea 15.
+const DAILY_BREAK_MINUTES = 60;
+
+// Applied only to the arrival penalty after 09:15.
+const MORNING_TEA_CREDIT = 15;
 
 function toMinutes(value) {
   if (
@@ -80,17 +85,19 @@ export function calculateArrivalLate(inTime) {
   // Up to and including 08:35: no arrival late.
   if (arrival <= 8 * 60 + 35) return 0;
 
-  // 08:36–08:45: 15 minutes.
+  // After 08:35, up to and including 08:45.
   if (arrival <= 8 * 60 + 45) return 15;
 
-  // 08:46–09:00: 30 minutes.
+  // After 08:45, up to and including 09:00.
   if (arrival <= 9 * 60) return 30;
 
-  // 09:01–09:15: 1 hour.
+  // After 09:00, up to and including 09:15.
   if (arrival <= 9 * 60 + 15) return 60;
 
-  // After 09:15: 4 hours.
-  return 240;
+  // After 09:15:
+  // Four-hour penalty minus the morning tea credit.
+  // 240 - 15 = 225 minutes (3h 45min).
+  return 4 * 60 - MORNING_TEA_CREDIT;
 }
 
 function getClockDetails(record) {
@@ -225,6 +232,7 @@ export function calculateAttendance(record) {
   const schedule = getSchedule(record.date);
   const details = getClockDetails(record);
 
+  // The 15-minute tea credit is already included here.
   const late = calculateArrivalLate(record.inTime);
 
   const regularLeave = details.intervals.reduce(
@@ -285,14 +293,15 @@ export function calculateAttendance(record) {
       WEEKDAY_END,
     );
 
-    // Deduct lunch only from Saturday 13:30–17:30 OT.
+    // Keep the confirmed Saturday rule:
+    // deduct the daily break hour from 13:30–17:30 OT only.
     saturdayOT = Math.max(
       0,
-      afternoonWorked - LUNCH_MINUTES,
+      afternoonWorked - DAILY_BREAK_MINUTES,
     );
   }
 
-  // Morning and post-17:30 OT are added without a lunch deduction.
+  // Morning and post-17:30 OT have no additional break deduction.
   const ot =
     morningOT +
     saturdayOT +
