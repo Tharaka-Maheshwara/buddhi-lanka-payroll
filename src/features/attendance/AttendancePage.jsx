@@ -4,7 +4,6 @@ import { deleteDoc, doc } from "firebase/firestore";
 import { db } from "../../lib/firebase/client";
 import { useRecords } from "../../shared/hooks/useRecords";
 import { usePeriod } from "../../app/PeriodContext";
-
 import {
   PageHeader,
   Button,
@@ -12,10 +11,8 @@ import {
   Stat,
   Message,
 } from "../../shared/ui";
-
 import { Modal } from "../../shared/ui/Modal";
 import { duration } from "../../shared/utils/format";
-
 import {
   calculateAttendance,
   getPersonalLeaves,
@@ -197,11 +194,14 @@ export function AttendancePage() {
 
   const totalMinutes = (key) =>
     rows.reduce(
-      (total, record) => total + Number(record[key] || 0),
+      (total, record) => total + (Number(record[key]) || 0),
       0,
     );
 
-  // These summary counts use only the selected month and employee.
+  // Total Late = Arrival late + Personal leave late.
+  const totalLateMinutes =
+    totalMinutes("late") + totalMinutes("leaveDuration");
+
   const monthlyPaidLeaveDays = new Set(
     rows
       .filter((record) => record.status === "Paid leave")
@@ -216,7 +216,7 @@ export function AttendancePage() {
 
   const summaryCards = [
     ["Regular worked time", duration(totalMinutes("regular"))],
-    ["Arrival late", duration(totalMinutes("late"))],
+    ["Total Late", duration(totalLateMinutes)],
     [
       "Paid leave",
       `${monthlyPaidLeaveDays} ${
