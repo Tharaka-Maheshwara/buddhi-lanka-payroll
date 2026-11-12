@@ -166,13 +166,19 @@ export function calculateSalary(
     "other deductions",
   );
 
-  // Do not round rates during calculation.
+  // Keep full precision until final monetary amounts.
   const basicDailyRate = monthlyBasic / BASIC_DAYS;
   const basicHourlyRate = basicDailyRate / 8;
   const basicMinuteRate = basicHourlyRate / 60;
 
   const otMinuteRate = basicMinuteRate * 1.5;
   const doubleMinuteRate = basicMinuteRate * 2;
+
+  const attendanceDailyRate =
+    monthlyAttendance / ALLOWANCE_DAYS;
+
+  const attendanceMinuteRate =
+    attendanceDailyRate / DAY_MINUTES;
 
   const travelDailyRate =
     monthlyTravel / ALLOWANCE_DAYS;
@@ -192,6 +198,7 @@ export function calculateSalary(
   const bonusMinuteRate =
     bonusDailyRate / DAY_MINUTES;
 
+  // Existing type identification remains unchanged.
   const is45000Type =
     monthlyAttendance > 0 ||
     monthlyBonus > 0 ||
@@ -213,8 +220,6 @@ export function calculateSalary(
   let otMinutes = 0;
   let doubleMinutes = 0;
 
-  // Unworked scheduled time beyond the saved late/leave
-  // deductions, for example an early departure.
   let otherMissingRegularMinutes = 0;
 
   const seenDates = new Set();
@@ -318,8 +323,6 @@ export function calculateSalary(
       holidayDays++;
       doubleMinutes += double;
 
-      // Optional holiday work does not create a normal
-      // salary absence or lateness penalty.
       continue;
     }
 
@@ -329,18 +332,17 @@ export function calculateSalary(
     otMinutes += ot;
     doubleMinutes += double;
 
-    /*
-     * Saturday has only 300 scheduled Regular minutes,
-     * but completing them earns one full Basic day.
-     */
+    // Saturday: 5 Regular hours earn one full Basic day.
     const scheduledRegularMinutes =
       isSaturday(record.date) ? 300 : 480;
 
+    // Arrival late and Personal leave are already accounted for.
     const expectedAfterLate = Math.max(
       0,
       scheduledRegularMinutes - late - leave,
     );
 
+    // Additional missing Regular time, such as early departure.
     otherMissingRegularMinutes += Math.max(
       0,
       expectedAfterLate - regular,
@@ -348,14 +350,6 @@ export function calculateSalary(
   }
 
   const leaveDays = paid + sick + noPay;
-
-  /*
-   * Every explicitly recorded normal day advances
-   * the calculation. Missing dates do not become No-pay.
-   *
-   * Cap Basic at its monthly 25-day basis and allowances
-   * at their monthly 26-day basis.
-   */
   const coveredDays = attendedDays + leaveDays;
 
   const basicBaseDays = Math.min(
@@ -373,13 +367,7 @@ export function calculateSalary(
 
   const noPayMinutes = noPay * DAY_MINUTES;
 
-  /*
-   * Start from credited Basic days, including Saturday.
-   * Deduct late once, then any additional missing
-   * scheduled Regular time.
-   *
-   * Paid/Sick leave retains Basic.
-   */
+  // Basic calculation remains unchanged.
   const basicUnpaidMinutes =
     noPayMinutes +
     lateMinutes +
@@ -401,10 +389,45 @@ export function calculateSalary(
     leaveDays + lateDays;
 
   /*
-   * 30,000 type Travel:
-   * cumulative absence penalty replaces the ordinary
-   * per-day leave deduction, following your example.
+   * ATTENDANCE ALLOWANCE
+   *
+   * Includes:
+   * - Arrival late
+   * - Personal leave
+   * - Additional missing Regular time / early departure
+   *
+   * The same minute is not deducted twice.
    */
+  const attendanceDeductibleMinutes =
+    lateMinutes + otherMissingRegularMinutes;
+
+  const attendancePenalties = [
+    0,
+    2000,
+    6000,
+    12000,
+    20000,
+  ];
+
+  const attendanceBefore = is45000Type
+    ? attendanceDailyRate * allowanceBaseDays
+    : 0;
+
+  const attendanceLateRequested = is45000Type
+    ? attendanceMinuteRate * attendanceDeductibleMinutes
+    : 0;
+
+  const attendancePenaltyRequested = is45000Type
+    ? attendancePenalties[Math.min(deductionDays, 4)]
+    : 0;
+
+  const attendanceComponent = calculateComponent(
+    attendanceBefore,
+    attendanceLateRequested,
+    attendancePenaltyRequested,
+  );
+
+  // Travel calculation remains unchanged.
   const travelPenalties = [
     0,
     500,
@@ -431,6 +454,7 @@ export function calculateSalary(
     requestedTravelPenalty,
   );
 
+  // Meal calculation remains unchanged.
   const mealBefore =
     mealDailyRate * allowanceBaseDays;
 
@@ -440,11 +464,7 @@ export function calculateSalary(
       lateMinutes * mealMinuteRate,
   );
 
-  /*
-   * Bonus accrues from covered days.
-   * Apply automatic late deduction and additional
-   * manually entered bonus deduction.
-   */
+  // Production bonus calculation remains unchanged.
   const bonusBefore =
     bonusDailyRate * allowanceBaseDays;
 
@@ -462,8 +482,7 @@ export function calculateSalary(
   const earnings = {
     basic: round(basic.after),
 
-    // Remains excluded according to your instruction.
-    attendance: 0,
+    attendance: round(attendanceComponent.after),
 
     travel: round(travel.after),
     meal: round(meal.after),
@@ -491,7 +510,7 @@ export function calculateSalary(
     ),
   );
 
-  // Your selected worksheet method.
+  // EPF calculation remains unchanged.
   const epfBase = earnings.basic;
   const epf = round(epfBase * EPF_RATE);
 
@@ -546,6 +565,7 @@ export function calculateSalary(
       extraLateMinutes,
       noPayMinutes,
       otherMissingRegularMinutes,
+      attendanceDeductibleMinutes,
       basicUnpaidMinutes,
       otMinutes,
       doubleMinutes,
@@ -562,6 +582,9 @@ export function calculateSalary(
       otMinute: otMinuteRate,
       doubleMinute: doubleMinuteRate,
 
+      attendanceDaily: attendanceDailyRate,
+      attendanceMinute: attendanceMinuteRate,
+
       travelDaily: travelDailyRate,
       mealDaily: mealDailyRate,
       bonusDaily: bonusDailyRate,
@@ -573,7 +596,19 @@ export function calculateSalary(
 
     deductions: {
       basic: round(basic.standardDeduction),
-      attendance: 0,
+
+      attendance: round(
+        attendanceComponent.standardDeduction +
+          attendanceComponent.penalty,
+      ),
+
+      attendanceLate: round(
+        attendanceComponent.standardDeduction,
+      ),
+
+      attendancePenalty: round(
+        attendanceComponent.penalty,
+      ),
 
       meal: round(meal.standardDeduction),
       travel: round(travel.standardDeduction),
@@ -593,6 +628,7 @@ export function calculateSalary(
 
     earnedBeforeDeductions: {
       basic: round(basic.before),
+      attendance: round(attendanceComponent.before),
       travel: round(travel.before),
       meal: round(meal.before),
       bonus: round(bonus.before),
