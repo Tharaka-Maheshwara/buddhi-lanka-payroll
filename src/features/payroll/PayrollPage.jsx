@@ -77,6 +77,7 @@ function getSourceKey(employee, records) {
       employee.travel,
       employee.meal,
       employee.bonus,
+      employee.epfEnabled === true,
     ],
 
     records: records
@@ -184,18 +185,20 @@ function SalaryModal({
         nextResult.calculationMode !== "attendance-based"
       ) {
         throw new Error(
-          "Update domain/salary.js with the attendance-based salary calculation.",
+          "Update domain/salary.js with the attendance-based calculation.",
         );
       }
 
       if (
-        !nextResult.epf ||
+        typeof nextResult.epf?.enabled !== "boolean" ||
+        nextResult.epf.enabled !==
+          (employee.epfEnabled === true) ||
         !Number.isFinite(nextResult.deductions?.epf) ||
         !Number.isFinite(nextResult.totalDeductions) ||
         !Number.isFinite(nextResult.payable)
       ) {
         throw new Error(
-          "The salary calculation returned an invalid result.",
+          "Update domain/salary.js with the optional EPF calculation.",
         );
       }
 
@@ -226,7 +229,7 @@ function SalaryModal({
           duration(result.time.regularMinutes),
         ],
         [
-          "Total late",
+          "Arrival late + personal leave",
           duration(result.time.lateMinutes),
         ],
         [
@@ -234,9 +237,10 @@ function SalaryModal({
           duration(result.time.otherMissingRegularMinutes),
         ],
         [
-          "OT",
-          duration(result.time.otMinutes),
+          "Attendance allowance deduction time",
+          duration(result.time.attendanceDeductibleMinutes),
         ],
+        ["OT", duration(result.time.otMinutes)],
         [
           "Double OT",
           duration(result.time.doubleMinutes),
@@ -274,7 +278,7 @@ function SalaryModal({
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <SummaryCard
             label="Attendance records"
             value={records.length}
@@ -286,8 +290,17 @@ function SalaryModal({
           />
 
           <SummaryCard
-            label="Total late"
+            label="Arrival late + personal leave"
             value={duration(recordedLate)}
+          />
+
+          <SummaryCard
+            label="Employee EPF"
+            value={
+              employee.epfEnabled === true
+                ? "8% deduction enabled"
+                : "No deduction"
+            }
           />
         </div>
 
@@ -336,8 +349,8 @@ function SalaryModal({
             role="status"
             className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
           >
-            The deduction, employee details or attendance
-            has changed. Press Calculate salary again.
+            The deduction, employee details, EPF setting or
+            attendance has changed. Press Calculate salary again.
           </p>
         )}
 
@@ -366,8 +379,9 @@ function SalaryModal({
               </p>
 
               <p className="mt-3 text-xs text-emerald-100">
-                Employee EPF (8%):{" "}
-                {money(result.deductions.epf)}
+                {result.epf.enabled
+                  ? `Employee EPF (8%): ${money(result.deductions.epf)}`
+                  : "Employee EPF: No deduction"}
               </p>
             </div>
 
@@ -410,10 +424,10 @@ function SalaryModal({
               </div>
 
               <p className="mt-4 text-xs leading-relaxed text-stone-500">
-                A completed Saturday regular shift earns a
-                full Basic day. Late and other missing
-                scheduled Regular time are deducted once.
-                Unrecorded dates are not automatically No pay.
+                A completed Saturday regular shift earns a full
+                Basic day. Late and other missing scheduled
+                Regular time are deducted once. Unrecorded dates
+                are not automatically No pay.
               </p>
             </section>
 
@@ -424,9 +438,9 @@ function SalaryModal({
 
               <p className="mb-3 text-xs leading-relaxed text-stone-500">
                 Basic uses 25 days. Allowances use 26 days.
-                Calculations retain full precision through
-                the final minute. Displayed amounts use two
-                decimal places.
+                Calculations retain full precision through the
+                final minute. Displayed amounts use two decimal
+                places.
               </p>
 
               <dl>
@@ -437,6 +451,10 @@ function SalaryModal({
                   [
                     "Double OT hourly rate",
                     result.rates.double,
+                  ],
+                  [
+                    "Attendance allowance daily rate",
+                    result.rates.attendanceDaily,
                   ],
                   [
                     "Travel daily rate",
@@ -472,6 +490,10 @@ function SalaryModal({
                     result.earnedBeforeDeductions.basic,
                   ],
                   [
+                    "Attendance allowance calculation base",
+                    result.earnedBeforeDeductions.attendance,
+                  ],
+                  [
                     "Travel calculation base",
                     result.earnedBeforeDeductions.travel,
                   ],
@@ -505,6 +527,14 @@ function SalaryModal({
                     result.deductions.basic,
                   ],
                   [
+                    "Attendance allowance time deduction",
+                    result.deductions.attendanceLate,
+                  ],
+                  [
+                    "Attendance allowance absence penalty",
+                    result.deductions.attendancePenalty,
+                  ],
+                  [
                     "Meal deduction",
                     result.deductions.meal,
                   ],
@@ -535,8 +565,8 @@ function SalaryModal({
               </dl>
 
               <p className="mt-3 text-xs text-stone-500">
-                These deductions are already included in
-                the salary components below.
+                These deductions are already included in the
+                salary components below.
               </p>
             </section>
 
@@ -560,15 +590,23 @@ function SalaryModal({
                   bold
                 />
 
-                <AmountRow
-                  label="Employee EPF (8%)"
-                  value={result.deductions.epf}
-                  deduction
-                />
+                {result.epf.enabled ? (
+                  <>
+                    <AmountRow
+                      label="Employee EPF (8%)"
+                      value={result.deductions.epf}
+                      deduction
+                    />
 
-                <p className="py-3 text-xs text-stone-500">
-                  EPF base: {money(result.epf.base)} × 8%
-                </p>
+                    <p className="py-3 text-xs text-stone-500">
+                      EPF base: {money(result.epf.base)} × 8%
+                    </p>
+                  </>
+                ) : (
+                  <p className="py-3 text-sm text-stone-500">
+                    Employee EPF: Not selected — no deduction
+                  </p>
+                )}
 
                 <div className="flex justify-between gap-4 border-t border-stone-200 pt-4 font-semibold text-emerald-900">
                   <dt>Net payable</dt>
@@ -718,6 +756,7 @@ export function PayrollPage() {
                   <th>Monthly travel</th>
                   <th>Monthly meal</th>
                   <th>Monthly bonus</th>
+                  <th>Employee EPF</th>
                   <th>Recorded dates</th>
                   <th>Actions</th>
                 </tr>
@@ -746,6 +785,12 @@ export function PayrollPage() {
                         {money(employee[key] || 0)}
                       </td>
                     ))}
+
+                    <td className="whitespace-nowrap">
+                      {employee.epfEnabled === true
+                        ? "8% enabled"
+                        : "No deduction"}
+                    </td>
 
                     <td>
                       {recordCounts.get(employee.id) || 0}

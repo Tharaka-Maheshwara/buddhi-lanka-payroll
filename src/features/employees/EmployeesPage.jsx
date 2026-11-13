@@ -1,4 +1,5 @@
 import { useState } from "react";
+
 import {
   collection,
   deleteDoc,
@@ -11,7 +12,14 @@ import {
 
 import { db } from "../../lib/firebase/client";
 import { useRecords } from "../../shared/hooks/useRecords";
-import { Button, Field, PageHeader, Message } from "../../shared/ui";
+
+import {
+  Button,
+  Field,
+  PageHeader,
+  Message,
+} from "../../shared/ui";
+
 import { Modal } from "../../shared/ui/Modal";
 import { money } from "../../shared/utils/format";
 
@@ -23,6 +31,7 @@ const blank = {
   travel: 0,
   meal: 0,
   bonus: 0,
+  epfEnabled: false,
 };
 
 const employeeTypes = {
@@ -36,6 +45,7 @@ const employeeTypes = {
       bonus: 15000,
     },
   },
+
   "30000": {
     label: "Basic Allowance 30,000",
     amounts: {
@@ -71,7 +81,12 @@ function inferEmployeeType(employee) {
 }
 
 export function EmployeesPage() {
-  const { records, saveRecord, error, loading } = useRecords("employees");
+  const {
+    records,
+    saveRecord,
+    error,
+    loading,
+  } = useRecords("employees");
 
   const [editing, setEditing] = useState(null);
   const [employeeType, setEmployeeType] = useState("");
@@ -79,7 +94,9 @@ export function EmployeesPage() {
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const [deleteEmployee, setDeleteEmployee] = useState(null);
+  const [deleteEmployee, setDeleteEmployee] =
+    useState(null);
+
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
 
@@ -92,12 +109,27 @@ export function EmployeesPage() {
   );
 
   function open(employee = null) {
-    if (busy || loading || error || deleteEmployee) return;
+    if (
+      busy ||
+      loading ||
+      error ||
+      deleteEmployee
+    ) {
+      return;
+    }
 
     setMessage("");
     setFormError("");
-    setEmployeeType(inferEmployeeType(employee));
-    setEditing({ ...blank, ...(employee || {}) });
+
+    setEmployeeType(
+      inferEmployeeType(employee),
+    );
+
+    setEditing({
+      ...blank,
+      ...(employee || {}),
+      epfEnabled: employee?.epfEnabled === true,
+    });
   }
 
   function close() {
@@ -109,9 +141,10 @@ export function EmployeesPage() {
   }
 
   function update(key, value) {
-    if (saving) return;
+    if (saving || !editing) return;
 
     setFormError("");
+
     setEditing((previous) => ({
       ...previous,
       [key]: value,
@@ -132,6 +165,7 @@ export function EmployeesPage() {
       bonus: 0,
     };
 
+    // Preserve the EPF checkbox when changing salary package.
     setEditing((previous) => ({
       ...previous,
       ...amounts,
@@ -151,15 +185,21 @@ export function EmployeesPage() {
       const role = editing.role.trim();
 
       if (!name) {
-        throw new Error("Employee name is required.");
+        throw new Error(
+          "Employee name is required.",
+        );
       }
 
       if (!role) {
-        throw new Error("Employee role is required.");
+        throw new Error(
+          "Employee role is required.",
+        );
       }
 
       if (!employeeTypes[employeeType]) {
-        throw new Error("Select an employee type.");
+        throw new Error(
+          "Select an employee type.",
+        );
       }
 
       const amounts = {};
@@ -176,7 +216,9 @@ export function EmployeesPage() {
           value === undefined ||
           String(value).trim() === ""
         ) {
-          throw new Error(`Enter ${label.toLowerCase()}.`);
+          throw new Error(
+            `Enter ${label.toLowerCase()}.`,
+          );
         }
 
         const amount = Number(value);
@@ -194,11 +236,13 @@ export function EmployeesPage() {
         amounts[key] = amount;
       }
 
-      // Preserve the existing Firestore document schema.
       const employee = {
         name,
         role,
         ...amounts,
+
+        // Always store an actual Boolean.
+        epfEnabled: editing.epfEnabled === true,
       };
 
       if (editing.id) {
@@ -209,16 +253,27 @@ export function EmployeesPage() {
 
       setEditing(null);
       setEmployeeType("");
-      setMessage("Employee saved successfully.");
-    } catch (error) {
-      setFormError(error.message || "Unable to save employee.");
+      setMessage(
+        "Employee saved successfully.",
+      );
+    } catch (failure) {
+      setFormError(
+        failure.message || "Unable to save employee.",
+      );
     } finally {
       setSaving(false);
     }
   }
 
   function openDelete(employee) {
-    if (busy || editing || loading || error) return;
+    if (
+      busy ||
+      editing ||
+      loading ||
+      error
+    ) {
+      return;
+    }
 
     setMessage("");
     setDeleteError("");
@@ -240,14 +295,20 @@ export function EmployeesPage() {
 
     try {
       if (!db) {
-        throw new Error("Firebase is not configured.");
+        throw new Error(
+          "Firebase is not configured.",
+        );
       }
 
-      // Avoid leaving existing attendance without an employee profile.
+      // Preserve the existing deletion restriction.
       const attendanceSnapshot = await getDocs(
         query(
           collection(db, "attendance"),
-          where("employee", "==", deleteEmployee.id),
+          where(
+            "employee",
+            "==",
+            deleteEmployee.id,
+          ),
           limit(1),
         ),
       );
@@ -258,15 +319,20 @@ export function EmployeesPage() {
         );
       }
 
-      await deleteDoc(doc(db, "employees", deleteEmployee.id));
+      await deleteDoc(
+        doc(db, "employees", deleteEmployee.id),
+      );
 
-      setMessage(`${deleteEmployee.name} deleted successfully.`);
+      setMessage(
+        `${deleteEmployee.name} deleted successfully.`,
+      );
+
       setDeleteEmployee(null);
-    } catch (error) {
+    } catch (failure) {
       setDeleteError(
-        error.code === "permission-denied"
+        failure.code === "permission-denied"
           ? "Permission denied. Check the published Firestore rules."
-          : error.message || "Unable to delete employee.",
+          : failure.message || "Unable to delete employee.",
       );
     } finally {
       setDeleting(false);
@@ -281,7 +347,11 @@ export function EmployeesPage() {
         action={
           <Button
             type="button"
-            disabled={busy || loading || Boolean(error)}
+            disabled={
+              busy ||
+              loading ||
+              Boolean(error)
+            }
             onClick={() => open()}
           >
             + Add employee
@@ -289,10 +359,12 @@ export function EmployeesPage() {
         }
       />
 
-      {(error || message) && <Message>{error || message}</Message>}
+      {(error || message) && (
+        <Message>{error || message}</Message>
+      )}
 
       <div className="card overflow-x-auto">
-        <table>
+        <table className="w-full">
           <thead>
             <tr>
               <th>Employee</th>
@@ -302,6 +374,7 @@ export function EmployeesPage() {
               <th>Travel</th>
               <th>Meal</th>
               <th>Bonus</th>
+              <th>Employee EPF</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -309,18 +382,44 @@ export function EmployeesPage() {
           <tbody>
             {records.map((employee) => (
               <tr key={employee.id}>
-                <td className="font-semibold">{employee.name}</td>
+                <td className="font-semibold">
+                  {employee.name}
+                </td>
+
                 <td>{employee.role}</td>
 
                 {amountFields.map(([key]) => (
-                  <td key={key}>{money(employee[key])}</td>
+                  <td
+                    key={key}
+                    className="whitespace-nowrap"
+                  >
+                    {money(employee[key] || 0)}
+                  </td>
                 ))}
+
+                <td>
+                  <span
+                    className={`inline-flex whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium ${
+                      employee.epfEnabled === true
+                        ? "bg-emerald-100 text-emerald-800"
+                        : "bg-stone-100 text-stone-600"
+                    }`}
+                  >
+                    {employee.epfEnabled === true
+                      ? "8% enabled"
+                      : "Not selected"}
+                  </span>
+                </td>
 
                 <td>
                   <div className="flex items-center gap-4 whitespace-nowrap">
                     <button
                       type="button"
-                      disabled={busy || Boolean(error)}
+                      disabled={
+                        busy ||
+                        loading ||
+                        Boolean(error)
+                      }
                       onClick={() => open(employee)}
                       className="font-medium text-emerald-800 underline disabled:opacity-50"
                     >
@@ -329,8 +428,14 @@ export function EmployeesPage() {
 
                     <button
                       type="button"
-                      disabled={busy || Boolean(error)}
-                      onClick={() => openDelete(employee)}
+                      disabled={
+                        busy ||
+                        loading ||
+                        Boolean(error)
+                      }
+                      onClick={() =>
+                        openDelete(employee)
+                      }
                       className="font-medium text-red-600 underline disabled:opacity-50"
                     >
                       Delete
@@ -355,7 +460,11 @@ export function EmployeesPage() {
 
       {editing && (
         <Modal
-          title={editing.id ? "Edit employee" : "Add employee"}
+          title={
+            editing.id
+              ? "Edit employee"
+              : "Add employee"
+          }
           description="Enter employee details and select a salary package."
           onClose={close}
           busy={saving}
@@ -390,7 +499,10 @@ export function EmployeesPage() {
                       placeholder="Enter full name"
                       value={editing.name}
                       onChange={(event) =>
-                        update("name", event.target.value)
+                        update(
+                          "name",
+                          event.target.value,
+                        )
                       }
                     />
                   </Field>
@@ -403,7 +515,10 @@ export function EmployeesPage() {
                       placeholder="Enter employee role"
                       value={editing.role}
                       onChange={(event) =>
-                        update("role", event.target.value)
+                        update(
+                          "role",
+                          event.target.value,
+                        )
                       }
                     />
                   </Field>
@@ -414,7 +529,9 @@ export function EmployeesPage() {
                         required
                         value={employeeType}
                         onChange={(event) =>
-                          changeEmployeeType(event.target.value)
+                          changeEmployeeType(
+                            event.target.value,
+                          )
                         }
                       >
                         <option value="" disabled>
@@ -423,7 +540,10 @@ export function EmployeesPage() {
 
                         {Object.entries(employeeTypes).map(
                           ([value, type]) => (
-                            <option key={value} value={value}>
+                            <option
+                              key={value}
+                              value={value}
+                            >
                               {type.label}
                             </option>
                           ),
@@ -436,7 +556,8 @@ export function EmployeesPage() {
 
               {!employeeType && (
                 <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-                  Select an employee type to display salary and allowances.
+                  Select an employee type to display salary
+                  and allowances.
                 </p>
               )}
 
@@ -447,36 +568,82 @@ export function EmployeesPage() {
                   </h3>
 
                   <p className="mb-5 text-sm text-stone-500">
-                    Amounts are filled from the selected employee type.
-                    You can change them before saving.
+                    Amounts are filled from the selected
+                    employee type. You can change them
+                    before saving.
                   </p>
 
                   <div className="grid gap-4 sm:grid-cols-2">
-                    {visibleAmountFields.map(([key, label]) => (
-                      <Field key={key} label={`${label} (LKR)`}>
-                        <input
-                          required
-                          type="number"
-                          min="0"
-                          max="100000000"
-                          step="0.01"
-                          value={editing[key]}
-                          onChange={(event) =>
-                            update(key, event.target.value)
-                          }
-                        />
-                      </Field>
-                    ))}
+                    {visibleAmountFields.map(
+                      ([key, label]) => (
+                        <Field
+                          key={key}
+                          label={`${label} (LKR)`}
+                        >
+                          <input
+                            required
+                            type="number"
+                            min="0"
+                            max="100000000"
+                            step="0.01"
+                            value={editing[key]}
+                            onChange={(event) =>
+                              update(
+                                key,
+                                event.target.value,
+                              )
+                            }
+                          />
+                        </Field>
+                      ),
+                    )}
                   </div>
 
                   {employeeType === "30000" && (
                     <p className="mt-4 rounded-lg bg-stone-50 p-3 text-sm text-stone-600">
-                      Attendance allowance and production bonus do not
-                      apply to this employee type.
+                      Attendance allowance and production
+                      bonus do not apply to this employee
+                      type.
                     </p>
                   )}
                 </section>
               )}
+
+              <section className="border-t border-stone-100 pt-5">
+                <label
+                  htmlFor="employee-epf-enabled"
+                  className="flex cursor-pointer items-start gap-3 rounded-xl border border-stone-200 bg-stone-50 p-4"
+                >
+                  <input
+                    id="employee-epf-enabled"
+                    type="checkbox"
+                    checked={
+                      editing.epfEnabled === true
+                    }
+                    disabled={saving}
+                    onChange={(event) =>
+                      update(
+                        "epfEnabled",
+                        event.target.checked,
+                      )
+                    }
+                    className="mt-1 h-5 w-5 shrink-0 accent-emerald-800"
+                    style={{ width: 20 }}
+                  />
+
+                  <span>
+                    <span className="block text-sm font-semibold">
+                      Deduct Employee EPF (8%)
+                    </span>
+
+                    <span className="mt-1 block text-xs leading-relaxed text-stone-500">
+                      Tick to deduct 8% from Basic after
+                      deductions. Leave unticked for no
+                      employee EPF deduction.
+                    </span>
+                  </span>
+                </label>
+              </section>
             </fieldset>
 
             <footer className="sticky bottom-0 flex flex-wrap justify-end gap-3 border-t border-stone-100 bg-[#f8faf6] px-6 py-4">
@@ -491,9 +658,13 @@ export function EmployeesPage() {
 
               <Button
                 type="submit"
-                disabled={saving || !employeeType}
+                disabled={
+                  saving || !employeeType
+                }
               >
-                {saving ? "Saving…" : "Save employee"}
+                {saving
+                  ? "Saving…"
+                  : "Save employee"}
               </Button>
             </footer>
           </form>
@@ -527,14 +698,16 @@ export function EmployeesPage() {
               </p>
 
               <p className="mt-3 text-sm">
-                Basic salary: {money(deleteEmployee.basic)}
+                Basic salary:{" "}
+                {money(deleteEmployee.basic)}
               </p>
             </div>
 
             <p className="text-sm text-stone-600">
-              This permanently deletes the employee profile. Existing
-              payroll drafts will remain. Employees with attendance
-              records cannot be deleted through this page.
+              This permanently deletes the employee
+              profile. Existing payroll drafts will
+              remain. Employees with attendance records
+              cannot be deleted through this page.
             </p>
           </div>
 
@@ -554,7 +727,9 @@ export function EmployeesPage() {
               onClick={confirmDelete}
               className="rounded-xl bg-red-600 px-5 py-3 font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {deleting ? "Deleting…" : "Delete employee"}
+              {deleting
+                ? "Deleting…"
+                : "Delete employee"}
             </button>
           </footer>
         </Modal>
