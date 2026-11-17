@@ -8,6 +8,12 @@ const SATURDAY_OT_BREAK_MINUTES = 60;
 // Used only in the arrival penalty after 09:15.
 const MORNING_TEA_CREDIT = 15;
 
+const STANDARD_BREAKS = [
+  [10 * 60 + 30, 10 * 60 + 45],
+  [13 * 60, 13 * 60 + 30],
+  [15 * 60 + 30, 15 * 60 + 45],
+];
+
 function toMinutes(value) {
   if (
     typeof value !== "string" ||
@@ -228,6 +234,43 @@ function workedWithin(details, rangeStart, rangeEnd) {
   return Math.max(0, elapsed - leave);
 }
 
+function holidayWorked(details) {
+  const scheduledBreaks = STANDARD_BREAKS.reduce(
+    (total, [breakStart, breakEnd]) => {
+      const breakDuration = overlap(
+        details.start,
+        details.end,
+        breakStart,
+        breakEnd,
+      );
+
+      const leaveDuringBreak =
+        details.intervals.reduce(
+          (leaveTotal, interval) =>
+            leaveTotal +
+            overlap(
+              interval.start,
+              interval.end,
+              breakStart,
+              breakEnd,
+            ),
+          0,
+        );
+
+      return total + Math.max(
+        0,
+        breakDuration - leaveDuringBreak,
+      );
+    },
+    0,
+  );
+
+  return Math.max(
+    0,
+    details.worked - scheduledBreaks,
+  );
+}
+
 export function calculateClock(record) {
   const { leave, worked } = getClockDetails(record);
 
@@ -255,6 +298,16 @@ export function calculateAttendance(record) {
   }
 
   const details = getClockDetails(record);
+
+  if (record.status === "Holiday work") {
+    return {
+      late: 0,
+      leaveDuration: 0,
+      regular: 0,
+      ot: 0,
+      double: holidayWorked(details),
+    };
+  }
 
   // The morning tea credit is already included in this value.
   const late = calculateArrivalLate(record.inTime);
@@ -329,16 +382,6 @@ export function calculateAttendance(record) {
     morningOT +
     saturdayAfternoonOT +
     eveningOT;
-
-  if (record.status === "Holiday work") {
-    return {
-      late,
-      leaveDuration: details.leave,
-      regular: 0,
-      ot: 0,
-      double: regular + ot,
-    };
-  }
 
   return {
     late,

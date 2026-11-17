@@ -353,9 +353,6 @@ export function calculateSalary(
       );
     }
 
-    arrivalLate += late;
-    personalLeave += leave;
-
     if (
       record.status === "Holiday work"
     ) {
@@ -371,13 +368,15 @@ export function calculateSalary(
       holidayDays++;
       doubleMinutes += double;
 
-      // Optional holiday work does not create a normal
-      // salary lateness or absence penalty.
+      // Holiday work does not create salary lateness,
+      // personal leave, or absence deductions.
       continue;
     }
 
     attendedDays++;
 
+    arrivalLate += late;
+    personalLeave += leave;
     regularMinutes += regular;
     lateMinutes += late + leave;
 
