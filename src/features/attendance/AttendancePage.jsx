@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { deleteDoc, doc } from "firebase/firestore";
+import { CalendarDays } from "lucide-react";
 
 import { db } from "../../lib/firebase/client";
 import { useRecords } from "../../shared/hooks/useRecords";
@@ -13,6 +14,9 @@ import {
 } from "../../shared/ui";
 import { Modal } from "../../shared/ui/Modal";
 import { duration } from "../../shared/utils/format";
+import {
+  getSriLankanHoliday,
+} from "../../data/sriLankanHolidays";
 import {
   calculateAttendance,
   getPersonalLeaves,
@@ -44,7 +48,6 @@ const statuses = [
   ["Sick leave", "Sick leave"],
   ["Partial day", "Half day"],
   ["No pay", "No pay"],
-  ["Holiday work", "Holiday work"],
 ];
 
 const leaveStatuses = ["Paid leave", "Sick leave", "No pay"];
@@ -69,6 +72,184 @@ function getTodayDate() {
     parts.find((part) => part.type === type).value;
 
   return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+const calendarWeekdays = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+function getCalendarDays(period) {
+  const [year, month] = period.split("-").map(Number);
+  const firstDay = new Date(
+    Date.UTC(year, month - 1, 1),
+  ).getUTCDay();
+  const dayCount = new Date(
+    Date.UTC(year, month, 0),
+  ).getUTCDate();
+
+  return [
+    ...Array(firstDay).fill(null),
+    ...Array.from(
+      { length: dayCount },
+      (_, index) =>
+        `${year}-${String(month).padStart(2, "0")}-${String(
+          index + 1,
+        ).padStart(2, "0")}`,
+    ),
+  ];
+}
+
+function shiftCalendarMonth(period, offset) {
+  const [year, month] = period.split("-").map(Number);
+  const next = new Date(
+    Date.UTC(year, month - 1 + offset, 1),
+  );
+
+  return `${next.getUTCFullYear()}-${String(
+    next.getUTCMonth() + 1,
+  ).padStart(2, "0")}`;
+}
+
+function calendarMonthLabel(period) {
+  const [year, month] = period.split("-").map(Number);
+
+  return new Intl.DateTimeFormat("en", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(year, month - 1, 1)));
+}
+
+function isHolidayWorkDate(date) {
+  if (!date) return false;
+
+  const [year, month, day] = date.split("-").map(Number);
+  const isSunday =
+    Number.isInteger(year) &&
+    Number.isInteger(month) &&
+    Number.isInteger(day) &&
+    new Date(Date.UTC(year, month - 1, day)).getUTCDay() === 0;
+
+  return isSunday || Boolean(getSriLankanHoliday(date));
+}
+
+function AttendanceCalendar({ value, onChange, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [viewPeriod, setViewPeriod] = useState(
+    value?.slice(0, 7) || getTodayDate().slice(0, 7),
+  );
+
+  useEffect(() => {
+    if (value) setViewPeriod(value.slice(0, 7));
+  }, [value]);
+
+  return (
+    <div>
+      <div className="relative">
+        <input
+          required
+          disabled={disabled}
+          type="text"
+          readOnly
+          value={value}
+        />
+        <button
+          type="button"
+          disabled={disabled}
+          aria-expanded={open}
+          aria-label={open ? "Hide calendar" : "Show calendar"}
+          className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-stone-500 hover:bg-stone-100 disabled:opacity-50"
+          onClick={() => setOpen((current) => !current)}
+        >
+          <CalendarDays size={20} />
+        </button>
+      </div>
+
+      {open && (
+        <div className="rounded-lg border border-stone-200 bg-stone-50 p-3">
+          <div className="mb-3 flex items-center justify-between">
+        <button
+          type="button"
+          className="rounded-md px-2 py-1 text-lg text-stone-600 hover:bg-stone-200"
+          disabled={disabled}
+          aria-label="Previous month"
+          onClick={() =>
+            setViewPeriod(shiftCalendarMonth(viewPeriod, -1))
+          }
+        >
+          ‹
+        </button>
+        <p className="text-sm font-semibold text-stone-800">
+          {calendarMonthLabel(viewPeriod)}
+        </p>
+        <button
+          type="button"
+          className="rounded-md px-2 py-1 text-lg text-stone-600 hover:bg-stone-200"
+          disabled={disabled}
+          aria-label="Next month"
+          onClick={() =>
+            setViewPeriod(shiftCalendarMonth(viewPeriod, 1))
+          }
+        >
+          ›
+        </button>
+          </div>
+
+          <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-semibold text-stone-500">
+            {calendarWeekdays.map((weekday) => (
+              <span key={weekday}>{weekday}</span>
+            ))}
+          </div>
+
+          <div className="mt-1 grid grid-cols-7 gap-1">
+            {getCalendarDays(viewPeriod).map((date, index) => {
+              if (!date) {
+                return <span key={`empty-${index}`} />;
+              }
+
+              const holiday = getSriLankanHoliday(date);
+              const selected = date === value;
+
+              return (
+                <button
+                  key={date}
+                  type="button"
+                  disabled={disabled}
+                  title={holiday?.name || date}
+                  aria-label={
+                    holiday
+                      ? `${date}, ${holiday.name}`
+                      : date
+                  }
+                  onClick={() => {
+                    onChange(date);
+                    setOpen(false);
+                  }}
+                  className={`min-h-9 rounded-md px-1 py-1 text-xs ${
+                    selected
+                      ? "bg-emerald-700 font-bold text-white"
+                      : holiday
+                        ? "bg-amber-100 font-semibold text-amber-900 hover:bg-amber-200"
+                        : "text-stone-700 hover:bg-stone-200"
+                  }`}
+                >
+                  <span>{Number(date.slice(8))}</span>
+                  {holiday && (
+                    <span className="block truncate text-[9px] leading-3">
+                      Holiday
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="mt-3 text-[11px] text-stone-500">
+            <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-amber-200" />
+            Sri Lankan public holiday
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function countLeaveDays(
@@ -303,27 +484,39 @@ export function AttendancePage() {
         return next;
       }
 
+      const nextEntry =
+        key === "date"
+          ? {
+              ...next,
+              status: isHolidayWorkDate(value)
+                ? "Holiday work"
+                : next.status === "Holiday work"
+                  ? "Present"
+                  : next.status,
+            }
+          : next;
+
       const paidLimit =
-        next.status === "Paid leave" &&
+        nextEntry.status === "Paid leave" &&
         countPaidLeaveDays(
           records,
-          next.employee,
-          next.date,
-          next.id,
+          nextEntry.employee,
+          nextEntry.date,
+          nextEntry.id,
         ) >= 2;
 
       const sickLimit =
-        next.status === "Sick leave" &&
+        nextEntry.status === "Sick leave" &&
         countSickLeaveDays(
           records,
-          next.employee,
-          next.date,
-          next.id,
+          nextEntry.employee,
+          nextEntry.date,
+          nextEntry.id,
         ) >= 7;
 
       return paidLimit || sickLimit
-        ? { ...next, status: "Present" }
-        : next;
+        ? { ...nextEntry, status: "Present" }
+        : nextEntry;
     });
   }
 
@@ -348,7 +541,11 @@ export function AttendancePage() {
           status:
             record.status === "Half day"
               ? "Partial day"
-              : record.status,
+              : isHolidayWorkDate(record.date)
+                ? "Holiday work"
+                : record.status === "Holiday work"
+                  ? "Present"
+                  : record.status,
           personalLeaves: getPersonalLeaves(record).map(
             (leave) => ({ ...leave }),
           ),
@@ -357,6 +554,9 @@ export function AttendancePage() {
           ...blank,
           employee: filter || "",
           date: getTodayDate(),
+          status: isHolidayWorkDate(getTodayDate())
+            ? "Holiday work"
+            : "Present",
           personalLeaves: [],
         };
 
@@ -518,16 +718,19 @@ export function AttendancePage() {
         );
       }
 
+      const dateAdjustedEntry = isHolidayWorkDate(entry.date)
+        ? { ...entry, status: "Holiday work" }
+        : entry;
       let savingEntry;
 
-      if (isLeaveEntry) {
-        savingEntry = clearLeaveTimes(entry);
+      if (leaveStatuses.includes(dateAdjustedEntry.status)) {
+        savingEntry = clearLeaveTimes(dateAdjustedEntry);
       } else {
-        const calculated = calculateAttendance(entry);
-        const firstLeave = entry.personalLeaves[0];
+        const calculated = calculateAttendance(dateAdjustedEntry);
+        const firstLeave = dateAdjustedEntry.personalLeaves[0];
 
         savingEntry = {
-          ...entry,
+          ...dateAdjustedEntry,
           ...calculated,
           leaveOut: firstLeave?.out || "",
           leaveIn: firstLeave?.in || "",
@@ -827,55 +1030,57 @@ export function AttendancePage() {
                   </Field>
 
                   <Field label="Date">
-                    <input
-                      required
-                      disabled={!hasSelectedEmployee}
-                      type="date"
+                    <AttendanceCalendar
                       value={entry.date}
-                      onChange={(event) =>
-                        update("date", event.target.value)
-                      }
+                      disabled={!hasSelectedEmployee}
+                      onChange={(date) => update("date", date)}
                     />
                   </Field>
 
                   <div>
                     <Field label="Attendance type">
-                      <select
-                        disabled={!hasSelectedEmployee}
-                        value={entry.status}
-                        onChange={(event) =>
-                          changeStatus(event.target.value)
-                        }
-                      >
-                        {statuses.map(([status, label]) => {
-                          const unavailable =
-                            status === "Paid leave"
-                              ? !canChoosePaidLeave
-                              : status === "Sick leave"
-                                ? !canChooseSickLeave
-                                : false;
+                      {isHolidayWorkDate(entry.date) ? (
+                        <div className="flex min-h-[46px] items-center rounded-[9px] border border-emerald-200 bg-emerald-50 px-3 text-sm text-emerald-900">
+                          Holiday work
+                        </div>
+                      ) : (
+                        <select
+                          disabled={!hasSelectedEmployee}
+                          value={entry.status}
+                          onChange={(event) =>
+                            changeStatus(event.target.value)
+                          }
+                        >
+                          {statuses.map(([status, label]) => {
+                            const unavailable =
+                              status === "Paid leave"
+                                ? !canChoosePaidLeave
+                                : status === "Sick leave"
+                                  ? !canChooseSickLeave
+                                  : false;
 
-                          const limitLabel =
-                            status === "Paid leave" &&
-                            paidLeaveUsed >= 2
-                              ? " — monthly limit reached"
-                              : status === "Sick leave" &&
-                                  sickLeaveUsed >= 7
-                                ? " — yearly limit reached"
-                                : "";
+                            const limitLabel =
+                              status === "Paid leave" &&
+                              paidLeaveUsed >= 2
+                                ? " — monthly limit reached"
+                                : status === "Sick leave" &&
+                                    sickLeaveUsed >= 7
+                                  ? " — yearly limit reached"
+                                  : "";
 
-                          return (
-                            <option
-                              key={status}
-                              value={status}
-                              disabled={unavailable}
-                            >
-                              {label}
-                              {limitLabel}
-                            </option>
-                          );
-                        })}
-                      </select>
+                            return (
+                              <option
+                                key={status}
+                                value={status}
+                                disabled={unavailable}
+                              >
+                                {label}
+                                {limitLabel}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      )}
                     </Field>
 
                     {leaveRecordsReady && (
